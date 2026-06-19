@@ -1,0 +1,88 @@
+{
+  "name": "tci-client-node",
+  "version": "0.1.0",
+  "description": "Pure TypeScript TCI (Transceiver Control Interface) client for SunSDR/ExpertSDR.",
+  "type": "module",
+  "license": "MIT",
+  "author": "boybook",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boybook/tci-client-node.git"
+  },
+  "keywords": [
+    "tci",
+    "sunsdr",
+    "expertsdr",
+    "hamradio",
+    "cat",
+    "websocket",
+    "audio"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "protocol": [
+        "./dist/protocol/index.d.ts"
+      ],
+      "audio": [
+        "./dist/audio/index.d.ts"
+      ],
+      "testing": [
+        "./dist/testing/index.d.ts"
+      ],
+      "*": [
+        "./dist/index.d.ts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "import": "./dist/protocol/index.js",
+      "require": "./dist/protocol/index.cjs"
+    },
+    "./audio": {
+      "types": "./dist/audio/index.d.ts",
+      "import": "./dist/audio/index.js",
+      "require": "./dist/audio/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "require": "./dist/testing/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rimraf dist coverage",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "eventemitter3": "^5.0.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.1",
+    "@types/ws": "^8.18.1",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
