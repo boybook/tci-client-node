@@ -112,6 +112,16 @@ npm run build
 
 The package is built with `tsup` and publishes ESM, CommonJS, and declaration files.
 
+## Releases
+
+Releases are published by GitHub Actions when a `v*` tag is pushed. The tag must
+match `package.json` exactly, for example `v0.1.0` for version `0.1.0`.
+
+The workflow mirrors the `icom-wlan-node` release shape: install with `npm ci`,
+typecheck, build, test, verify the package contents, and publish to npm using
+the `NPM_TOKEN` repository secret. Provenance is enabled through npm's
+`publishConfig`.
+
 ## References
 
 - [ExpertSDR3 TCI protocol](https://github.com/ExpertSDR3/TCI)

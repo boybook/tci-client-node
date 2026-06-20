@@ -9,6 +9,11 @@
     "type": "git",
     "url": "git+https://github.com/boybook/tci-client-node.git"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
   "keywords": [
     "tci",
     "sunsdr",
