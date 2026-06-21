@@ -27,6 +27,10 @@ export interface TciClientOptions {
   vfo?: number;
   connectTimeoutMs?: number;
   commandTimeoutMs?: number;
+  writeAckMode?: TciWriteAckMode;
+  writeTimeoutMs?: number;
+  writeSettleMs?: number;
+  frequencyWriteSettleMs?: number;
   WebSocketImpl?: typeof WebSocket;
 }
 
@@ -41,6 +45,17 @@ export interface TciAudioConfig {
 export interface TciPttOptions {
   source?: 'tci' | 'mic1' | 'mic2' | 'micpc' | 'ecoder2' | string;
   trx?: number;
+  ackMode?: TciWriteAckMode;
+  timeoutMs?: number;
+  settleMs?: number;
+}
+
+export type TciWriteAckMode = 'state' | 'reply' | 'optimistic';
+
+export interface TciWriteOptions {
+  ackMode?: TciWriteAckMode;
+  timeoutMs?: number;
+  settleMs?: number;
 }
 
 export interface TciTxChronoRequest {
@@ -85,6 +100,9 @@ export interface TciClientEvents {
   state: (state: TciClientState) => void;
   command: (command: TciCommand) => void;
   binary: (frame: TciStreamFrame) => void;
+  'tci:tx': (raw: string) => void;
+  'tci:rx': (raw: string, commands: TciCommand[]) => void;
+  'tci:binary': (frame: TciStreamFrame) => void;
   rxAudioFrame: (frame: TciStreamFrame) => void;
   lineoutAudioFrame: (frame: TciStreamFrame) => void;
   txChrono: (request: TciTxChronoRequest) => void;
@@ -96,7 +114,18 @@ export interface SendCommandOptions extends QueueCommandOptions {
 }
 
 export class TciClient extends EventEmitter<TciClientEvents> {
-  readonly options: Required<Pick<TciClientOptions, 'receiver' | 'trx' | 'vfo' | 'connectTimeoutMs' | 'commandTimeoutMs'>> &
+  readonly options: Required<Pick<
+    TciClientOptions,
+    | 'receiver'
+    | 'trx'
+    | 'vfo'
+    | 'connectTimeoutMs'
+    | 'commandTimeoutMs'
+    | 'writeAckMode'
+    | 'writeTimeoutMs'
+    | 'writeSettleMs'
+    | 'frequencyWriteSettleMs'
+  >> &
     Pick<TciClientOptions, 'url'>;
 
   private readonly WebSocketImpl: typeof WebSocket;
@@ -113,6 +142,10 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       vfo: options.vfo ?? 0,
       connectTimeoutMs: options.connectTimeoutMs ?? 5_000,
       commandTimeoutMs: options.commandTimeoutMs ?? 1_000,
+      writeAckMode: options.writeAckMode ?? 'state',
+      writeTimeoutMs: options.writeTimeoutMs ?? 3_000,
+      writeSettleMs: options.writeSettleMs ?? 0,
+      frequencyWriteSettleMs: options.frequencyWriteSettleMs ?? 250,
     };
     this.WebSocketImpl = options.WebSocketImpl ?? WebSocket;
     this.queue = new TciCommandQueue({
@@ -206,8 +239,55 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     return reply;
   }
 
-  async setFrequency(frequencyHz: number, receiver = this.options.receiver, vfo = this.options.vfo): Promise<void> {
-    await this.sendCommand('VFO', [receiver, vfo, Math.round(frequencyHz)]);
+  async sendStateWrite(
+    name: string,
+    args: readonly unknown[],
+    isApplied: (state: TciClientState) => boolean,
+    description = formatTciCommand(name, args).replace(/;$/, ''),
+    options: TciWriteOptions = {},
+  ): Promise<void> {
+    const ackMode = options.ackMode ?? this.options.writeAckMode;
+    if (ackMode === 'reply') {
+      await this.sendCommand(name, args, { timeoutMs: options.timeoutMs });
+      return;
+    }
+
+    if (isApplied(this.getState())) {
+      return;
+    }
+
+    if (ackMode === 'optimistic') {
+      await this.sendCommand(name, args, { waitForReply: false });
+      return;
+    }
+
+    const timeoutMs = options.timeoutMs ?? this.options.writeTimeoutMs;
+    const settleMs = options.settleMs ?? this.options.writeSettleMs;
+    const waiter = this.waitForState(isApplied, timeoutMs, settleMs, description);
+    try {
+      await this.sendCommand(name, args, { waitForReply: false });
+      await waiter.promise;
+    } catch (error) {
+      waiter.cancel();
+      throw error;
+    }
+  }
+
+  async setFrequency(
+    frequencyHz: number,
+    receiver = this.options.receiver,
+    vfo = this.options.vfo,
+    options: TciWriteOptions = {},
+  ): Promise<void> {
+    const frequency = Math.round(frequencyHz);
+    const key = rxVfoKey(receiver, vfo);
+    await this.sendStateWrite(
+      'VFO',
+      [receiver, vfo, frequency],
+      (state) => state.frequencies[key] === frequency,
+      `VFO:${receiver},${vfo},${frequency}`,
+      { settleMs: this.options.frequencyWriteSettleMs, ...options },
+    );
   }
 
   async getFrequency(receiver = this.options.receiver, vfo = this.options.vfo): Promise<number | undefined> {
@@ -215,8 +295,16 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     return parseNumber(reply.args[2]) ?? this.state.frequencies[rxVfoKey(receiver, vfo)];
   }
 
-  async setMode(mode: string, receiver = this.options.receiver): Promise<void> {
-    await this.sendCommand('MODULATION', [receiver, mode.toUpperCase()]);
+  async setMode(mode: string, receiver = this.options.receiver, options: TciWriteOptions = {}): Promise<void> {
+    const normalizedMode = mode.toUpperCase();
+    const key = rxVfoKey(receiver, this.options.vfo);
+    await this.sendStateWrite(
+      'MODULATION',
+      [receiver, normalizedMode],
+      (state) => state.modes[key]?.toLowerCase() === normalizedMode.toLowerCase(),
+      `MODULATION:${receiver},${normalizedMode}`,
+      options,
+    );
   }
 
   async getMode(receiver = this.options.receiver): Promise<string | undefined> {
@@ -228,7 +316,13 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   async setPtt(enabled: boolean, options: TciPttOptions = {}): Promise<void> {
     const trx = options.trx ?? this.options.trx;
     const args = options.source ? [trx, enabled, options.source] : [trx, enabled];
-    await this.sendCommand('TRX', args);
+    await this.sendStateWrite(
+      'TRX',
+      args,
+      (state) => state.ptt[String(trx)] === enabled,
+      `TRX:${trx},${enabled}`,
+      options,
+    );
   }
 
   async getPtt(trx = this.options.trx): Promise<boolean | undefined> {
@@ -312,6 +406,90 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     await this.sendCommand('CW_MACROS_STOP');
   }
 
+  private waitForState(
+    predicate: (state: TciClientState) => boolean,
+    timeoutMs: number,
+    settleMs: number,
+    description: string,
+  ): { promise: Promise<void>; cancel: () => void } {
+    let timeout: NodeJS.Timeout | undefined;
+    let settleTimeout: NodeJS.Timeout | undefined;
+    let resolved = false;
+    let resolvePromise!: () => void;
+    let rejectPromise!: (error: TciError) => void;
+
+    const cleanup = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = undefined;
+      }
+      if (settleTimeout) {
+        clearTimeout(settleTimeout);
+        settleTimeout = undefined;
+      }
+      this.off('state', onState);
+      this.off('disconnected', onDisconnected);
+    };
+
+    const resolveNow = () => {
+      resolved = true;
+      cleanup();
+      resolvePromise();
+    };
+
+    const check = () => {
+      if (!predicate(this.getState())) {
+        if (settleTimeout) {
+          clearTimeout(settleTimeout);
+          settleTimeout = undefined;
+        }
+        return;
+      }
+
+      if (settleMs <= 0) {
+        resolveNow();
+        return;
+      }
+
+      if (settleTimeout) {
+        return;
+      }
+
+      settleTimeout = setTimeout(() => {
+        settleTimeout = undefined;
+        if (predicate(this.getState())) {
+          resolveNow();
+        }
+      }, settleMs);
+    };
+
+    const onState = () => check();
+    const onDisconnected = () => {
+      if (resolved) {
+        return;
+      }
+      cleanup();
+      rejectPromise(new TciError('disconnected', `Disconnected while waiting for TCI state ${description}`));
+    };
+
+    const promise = new Promise<void>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+      timeout = setTimeout(() => {
+        cleanup();
+        reject(new TciError('command-timeout', `Timed out waiting for TCI state ${description}`));
+      }, timeoutMs);
+      this.on('state', onState);
+      this.on('disconnected', onDisconnected);
+      check();
+    });
+
+    return {
+      promise,
+      cancel: cleanup,
+    };
+  }
+
   private waitForOpen(ws: WebSocket): Promise<void> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -366,6 +544,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       throw new TciError('not-connected', 'TCI socket is not connected');
     }
+    this.emit('tci:tx', raw);
     await new Promise<void>((resolve, reject) => {
       ws.send(raw, (error) => (error ? reject(error) : resolve()));
     });
@@ -385,7 +564,9 @@ export class TciClient extends EventEmitter<TciClientEvents> {
         this.handleBinary(data);
         return;
       }
-      const commands = parseTciText(dataToBuffer(data));
+      const raw = dataToBuffer(data).toString('utf8');
+      const commands = parseTciText(raw);
+      this.emit('tci:rx', raw, commands);
       for (const command of commands) {
         this.queue.handleCommand(command);
         this.applyCommand(command);
@@ -398,6 +579,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
   private handleBinary(data: WebSocket.RawData): void {
     const frame = parseStreamFrame(dataToBuffer(data));
+    this.emit('tci:binary', frame);
     this.emit('binary', frame);
     switch (frame.streamType) {
       case TciStreamType.RX_AUDIO_STREAM:

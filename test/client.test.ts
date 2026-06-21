@@ -51,12 +51,55 @@ it('resolves setFrequency only on the final matching state after band-change noi
     return false;
   });
   await server.start();
-  const client = new TciClient({ url: server.url(), commandTimeoutMs: 500 });
+  const client = new TciClient({ url: server.url(), commandTimeoutMs: 500, frequencyWriteSettleMs: 20 });
   const ready = onceClientEvent(client, 'ready');
   await client.connect();
   await ready;
   await client.setFrequency(21_074_000);
   expect(client.getState().frequencies['0:0']).toBe(21_074_000);
+  await client.disconnect();
+});
+
+it('treats already-applied frequency and PTT writes as idempotent when the server would not echo', async () => {
+  server = new MockTciServer({
+    startupCommands: [
+      'PROTOCOL:2.0;',
+      'DEVICE:Mock ExpertSDR3;',
+      'VFO:0,0,7074000;',
+      'TRX:0,false;',
+      'READY:true;',
+    ],
+  });
+  server.onCommand(({ command }) => command.name === 'vfo' || command.name === 'trx');
+  await server.start();
+  const client = new TciClient({ url: server.url(), writeTimeoutMs: 30, frequencyWriteSettleMs: 0 });
+  const ready = onceClientEvent(client, 'ready');
+  await client.connect();
+  await ready;
+
+  await client.setPtt(false, { timeoutMs: 30 });
+  await client.setFrequency(7_074_000, 0, 0, { timeoutMs: 30, settleMs: 0 });
+
+  expect(server.receivedCommands.filter((command) => command.name === 'trx')).toHaveLength(0);
+  expect(server.receivedCommands.filter((command) => command.name === 'vfo')).toHaveLength(0);
+  expect(client.getState().connected).toBe(true);
+  await client.disconnect();
+});
+
+it('keeps the socket connected when a state-based write confirmation times out', async () => {
+  server = new MockTciServer();
+  server.onCommand(({ command }) => command.name === 'vfo');
+  await server.start();
+  const client = new TciClient({ url: server.url(), writeTimeoutMs: 30, frequencyWriteSettleMs: 0 });
+  const ready = onceClientEvent(client, 'ready');
+  await client.connect();
+  await ready;
+
+  await expect(client.setFrequency(7_074_000, 0, 0, { timeoutMs: 30, settleMs: 0 })).rejects.toMatchObject({
+    code: 'command-timeout',
+  });
+  expect(client.getState().connected).toBe(true);
+  expect(client.isConnected()).toBe(true);
   await client.disconnect();
 });
 
