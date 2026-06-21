@@ -33,9 +33,12 @@ it('runs connect -> startup -> command ack -> audio -> tx chrono -> tx audio', a
   server.sendTxChrono({ sampleCount: 4 });
   const [request] = await chrono;
   expect(request.sampleCount).toBe(4);
-  client.sendTxAudio({ sampleRate: request.sampleRate, sampleType: request.sampleType, channels: request.channels, samples: new Float32Array(4) });
+  expect(request.frame.payloadLength).toBe(0);
+  client.sendTxAudioForChrono(request, new Float32Array([0.1, 0.2]));
   await waitFor(() => server!.receivedTxAudioFrames.length === 1);
   expect(server.receivedTxAudioFrames[0]?.streamType).toBe(TciStreamType.TX_AUDIO_STREAM);
+  expect(server.receivedTxAudioFrames[0]?.sampleCount).toBe(4);
+  expect(Array.from(payloadToFloat32(server.receivedTxAudioFrames[0]!))).toEqual([expect.closeTo(0.1, 4), expect.closeTo(0.2, 4), 0, 0]);
 
   await client.disconnect();
 });

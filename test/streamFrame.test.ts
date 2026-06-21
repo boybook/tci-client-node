@@ -47,6 +47,39 @@ it('validates payload length against sample type and channels', () => {
   expect(() => parseStreamFrame(truncated)).toThrow(/length mismatch|aligned/);
 });
 
+it('parses header-only TX_CHRONO requests', () => {
+  const raw = buildStreamFrame({
+    sampleRate: 12_000,
+    sampleType: 'float32',
+    streamType: TciStreamType.TX_CHRONO,
+    channels: 1,
+    sampleCount: 512,
+  });
+  expect(raw.byteLength).toBe(TCI_STREAM_HEADER_BYTES);
+
+  const frame = parseStreamFrame(raw);
+  expect(frame.streamType).toBe(TciStreamType.TX_CHRONO);
+  expect(frame.sampleCount).toBe(512);
+  expect(frame.payloadLength).toBe(0);
+  expect(frame.payload.byteLength).toBe(0);
+});
+
+it('accepts scalar sample-count payloads from legacy TCI stream builders', () => {
+  const raw = buildStreamFrame({
+    sampleRate: 12_000,
+    sampleType: 'float32',
+    streamType: TciStreamType.RX_AUDIO_STREAM,
+    channels: 2,
+    samples: new Float32Array([0, 0.25, 0.5, 0.75]),
+  });
+  raw.writeUInt32LE(4, 5 * 4);
+
+  const frame = parseStreamFrame(raw);
+  expect(frame.sampleCount).toBe(4);
+  expect(frame.payloadLength).toBe(16);
+  expect(Array.from(payloadToFloat32(frame))).toEqual([0, 0.25, 0.5, 0.75]);
+});
+
 it('infers channels from legacy 1.8-style headers without the channels field', () => {
   const raw = buildStreamFrame({
     sampleRate: 12_000,

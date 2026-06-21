@@ -48,13 +48,7 @@ client.on('rxAudioFrame', (frame) => {
 client.on('txChrono', (request) => {
   // The host application decides what to transmit.
   // Send silence if no TX audio is ready.
-  client.sendTxAudio({
-    receiver: request.receiver,
-    sampleRate: request.sampleRate,
-    sampleType: request.sampleType,
-    channels: request.channels,
-    samples: new Float32Array(request.sampleCount * request.channels),
-  });
+  client.sendTxAudioForChrono(request, new Float32Array(request.sampleCount * request.channels));
 });
 
 await client.connect();
@@ -81,8 +75,8 @@ await client.setPtt(true, { source: 'tci' });
 
 The official TCI `Stream` header is 16 little-endian `uint32` fields. In this package:
 
-- `sampleCount` maps to the official `Stream.length` field, meaning samples per channel.
-- `payloadLength` is the derived byte length after applying sample type and channel count.
+- `sampleCount` maps to the official `Stream.length` field from the header.
+- `payloadLength` is the actual byte length after the 64-byte header. `TX_CHRONO` frames are valid with no payload.
 - `channels` is read from the TCI 1.9+ header. If a legacy 1.8-style frame has no channel field, the parser infers it from payload size.
 
 Supported sample types are `int16`, `int24`, `int32`, and `float32`.

@@ -1,6 +1,6 @@
 {
   "name": "tci-client-node",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pure TypeScript TCI (Transceiver Control Interface) client for SunSDR/ExpertSDR.",
   "type": "module",
   "license": "MIT",

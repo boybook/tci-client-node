@@ -43,6 +43,8 @@ export interface BuildStreamFrameOptions {
   channels: number;
   payload?: Buffer | Uint8Array | ArrayBuffer | ArrayBufferView;
   samples?: Float32Array | readonly number[];
+  /** Explicit Stream.length value, used for header-only frames such as TX_CHRONO. */
+  sampleCount?: number;
   codec?: number;
   crc?: number;
   reserved?: readonly number[];
@@ -61,27 +63,37 @@ export function parseStreamFrame(input: Buffer | ArrayBuffer | ArrayBufferView):
   const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
   const header = Array.from({ length: 16 }, (_, index) => view.getUint32(index * 4, true));
   const sampleType = normalizeSampleType(header[2]);
+  const streamType = normalizeStreamType(header[6]);
   let channels = header[7];
   const bytesPerSample = sampleTypeBytes(sampleType);
   const sampleCount = header[5];
   const actualPayloadLength = buffer.byteLength - TCI_STREAM_HEADER_BYTES;
   if (channels <= 0) {
-    const inferredChannels = sampleCount > 0 ? actualPayloadLength / sampleCount / bytesPerSample : 1;
-    if (!Number.isInteger(inferredChannels) || inferredChannels <= 0) {
-      throw new TciError('invalid-frame', `Invalid TCI channel count: ${channels}`);
+    if (streamType === TciStreamType.TX_CHRONO && actualPayloadLength === 0) {
+      channels = 1;
+    } else {
+      const inferredChannels = sampleCount > 0 ? actualPayloadLength / sampleCount / bytesPerSample : 1;
+      if (!Number.isInteger(inferredChannels) || inferredChannels <= 0) {
+        throw new TciError('invalid-frame', `Invalid TCI channel count: ${channels}`);
+      }
+      channels = inferredChannels;
     }
-    channels = inferredChannels;
   }
-  const payloadLength = sampleCount * bytesPerSample * channels;
-  const expectedLength = TCI_STREAM_HEADER_BYTES + payloadLength;
-  if (buffer.byteLength !== expectedLength) {
-    throw new TciError(
-      'invalid-frame',
-      `TCI stream frame length mismatch: header says ${sampleCount} samples (${payloadLength} payload bytes), got ${buffer.byteLength - TCI_STREAM_HEADER_BYTES}`,
-    );
-  }
-  if (payloadLength % (bytesPerSample * channels) !== 0) {
+  const payloadLength = actualPayloadLength;
+  const alignedFrameBytes = bytesPerSample * channels;
+  if (payloadLength % alignedFrameBytes !== 0) {
     throw new TciError('invalid-frame', 'TCI payload length is not aligned to sample type and channel count');
+  }
+
+  if (streamType !== TciStreamType.TX_CHRONO) {
+    const expectedPerChannelPayloadLength = sampleCount * bytesPerSample * channels;
+    const expectedScalarPayloadLength = sampleCount * bytesPerSample;
+    if (payloadLength !== expectedPerChannelPayloadLength && payloadLength !== expectedScalarPayloadLength) {
+      throw new TciError(
+        'invalid-frame',
+        `TCI stream frame length mismatch: header says ${sampleCount} samples (${expectedPerChannelPayloadLength} payload bytes), got ${payloadLength}`,
+      );
+    }
   }
 
   return {
@@ -91,7 +103,7 @@ export function parseStreamFrame(input: Buffer | ArrayBuffer | ArrayBufferView):
     codec: header[3],
     crc: header[4],
     payloadLength,
-    streamType: normalizeStreamType(header[6]),
+    streamType,
     channels,
     reserved: header.slice(8),
     payload: buffer.subarray(TCI_STREAM_HEADER_BYTES),
@@ -110,7 +122,11 @@ export function buildStreamFrame(options: BuildStreamFrameOptions): Buffer {
   if (payload.byteLength % (bytesPerSample * channels) !== 0) {
     throw new TciError('invalid-frame', 'TCI payload length is not aligned to sample type and channel count');
   }
-  const sampleCount = payload.byteLength / bytesPerSample / channels;
+  const derivedSampleCount = payload.byteLength / bytesPerSample / channels;
+  const sampleCount = options.sampleCount ?? derivedSampleCount;
+  if (!Number.isInteger(sampleCount) || sampleCount < 0) {
+    throw new TciError('invalid-frame', `Invalid TCI sample count: ${sampleCount}`);
+  }
 
   const frame = Buffer.alloc(TCI_STREAM_HEADER_BYTES + payload.byteLength);
   const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);

@@ -384,6 +384,21 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     this.sendRawBinary(frame);
   }
 
+  sendTxAudioForChrono(request: TciTxChronoRequest, samples: Float32Array | readonly number[]): void {
+    const channels = Math.max(1, Math.floor(request.channels || 1));
+    const targetSampleLength = Math.max(0, Math.floor(request.sampleCount) * channels);
+    const output = new Float32Array(targetSampleLength);
+    const source = samples instanceof Float32Array ? samples : Float32Array.from(samples);
+    output.set(source.subarray(0, output.length));
+    this.sendTxAudio({
+      receiver: request.receiver,
+      sampleRate: request.sampleRate,
+      sampleType: request.sampleType,
+      channels,
+      samples: output,
+    });
+  }
+
   async setRxSensorsEnabled(enabled: boolean, intervalMs?: number): Promise<void> {
     const args = intervalMs === undefined ? [enabled] : [enabled, intervalMs];
     await this.sendCommand('RX_SENSORS_ENABLE', args, { waitForReply: false });

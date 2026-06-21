@@ -3,7 +3,6 @@ import WebSocket, { WebSocketServer } from 'ws';
 import {
   buildStreamFrame,
   parseStreamFrame,
-  samplesToPayload,
   TciSampleType,
   TciStreamType,
   type BuildStreamFrameOptions,
@@ -124,14 +123,14 @@ export class MockTciServer {
     const sampleType = options.sampleType ?? TciSampleType.FLOAT32;
     const channels = options.channels ?? 1;
     const sampleCount = options.sampleCount ?? 512;
-    const payload = options.payload ?? samplesToPayload(new Float32Array(sampleCount * channels), sampleType);
     const frame = buildStreamFrame({
       receiver: options.receiver ?? 0,
       sampleRate: options.sampleRate ?? 12_000,
       sampleType,
       streamType: TciStreamType.TX_CHRONO,
       channels,
-      payload,
+      payload: options.payload,
+      sampleCount,
     });
     this.broadcastBinary(frame);
   }
