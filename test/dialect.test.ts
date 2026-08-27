@@ -22,6 +22,7 @@ describe('TCI dialect detection', () => {
     ['PROTOCOL:ExpertSDR,1.4;DEVICE:SunSDR;VFO:0,0,7100000;READY;', 'expertsdr-1.4'],
     ['PROTOCOL:ExpertSDR2,1.8;DEVICE:SunSDR2PRO;VFO:0,0,7100000;READY;', 'expertsdr-1.5-1.8'],
     ['PROTOCOL:ExpertSDR3,1.10;DEVICE:SunSDR2DX;VFO:0,0,7100000;READY;', 'expertsdr-1.9-2.0'],
+    ['PROTOCOL:ExpertSDR3,1.5;DEVICE:AetherSDR;AUDIO_STREAM_CHANNELS:2;VFO:0,0,7100000;READY;', 'aethersdr-1.5'],
     ['PROTOCOL:Thetis,2.0;DEVICE:ANAN7000DLE;VFO:0,0,7100000;READY;', 'thetis-2.0'],
     ['PROTOCOL:ExpertSDR3,2.0;DEVICE:SunSDR2PRO;TX_PROFILES_EX:a,b;VFO:0,0,7100000;READY;', 'thetis-2.0'],
   ])('selects %s as %s', (startup, expected) => {

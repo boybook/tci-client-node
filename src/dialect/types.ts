@@ -4,6 +4,7 @@ export type BuiltInTciDialectId =
   | 'expertsdr-1.4'
   | 'expertsdr-1.5-1.8'
   | 'expertsdr-1.9-2.0'
+  | 'aethersdr-1.5'
   | 'thetis-2.0'
   | 'generic-observed';
 

@@ -166,6 +166,55 @@ it('rejects a WebSocket that does not provide enough TCI initialization evidence
   await expect(client.connect()).rejects.toMatchObject({ code: 'invalid-handshake' });
 });
 
+it('parses AetherSDR 1.5 audio with modern scalar stream semantics', async () => {
+  server = new MockTciServer({
+    startupCommands: [
+      'PROTOCOL:ExpertSDR3,1.5;',
+      'DEVICE:AetherSDR;',
+      'VFO:0,0,14100000;',
+      'AUDIO_STREAM_CHANNELS:2;',
+      'AUDIO_STREAM_SAMPLES:2048;',
+      'READY;',
+    ],
+  });
+  await server.start();
+  const client = new TciClient({ url: server.url() });
+  await client.connect();
+  const received = onceClientEvent(client, 'rxAudioFrame');
+  server.sendRxAudioFrame({ channels: 2, samples: new Float32Array([0.1, -0.1, 0.2, -0.2]) });
+  const [frame] = await received;
+  expect(client.getHandshakeResult()?.dialect.dialect.id).toBe('aethersdr-1.5');
+  expect(frame).toMatchObject({ headerSampleCount: 4, sampleCount: 4, frameCount: 2, lengthSemantics: 'scalar' });
+  await client.disconnect();
+});
+
+it('falls back to readback when TUNE and SPLIT repeat writes are not echoed', async () => {
+  server = new MockTciServer();
+  server.onCommand(({ socket, command }) => {
+    if (command.name === 'tune') {
+      if (command.args.length === 1) socket.send('TUNE:0,false;');
+      return true;
+    }
+    if (command.name === 'split_enable') {
+      if (command.args.length === 1) socket.send('SPLIT_ENABLE:0,false;');
+      return true;
+    }
+    return false;
+  });
+  await server.start();
+  const client = new TciClient({ url: server.url(), writeTimeoutMs: 25, commandTimeoutMs: 100 });
+  await client.connect();
+  await expect(client.setTune(false)).resolves.toBeUndefined();
+  await expect(client.setSplit(false)).resolves.toBeUndefined();
+  expect(server.receivedCommands.map((command) => command.raw)).toEqual(expect.arrayContaining([
+    'TUNE:0,false',
+    'TUNE:0',
+    'SPLIT_ENABLE:0,false',
+    'SPLIT_ENABLE:0',
+  ]));
+  await client.disconnect();
+});
+
 it('marks state disconnected and rejects queued commands on server close', async () => {
   server = new MockTciServer({ commandDelayMs: 100 });
   await server.start();

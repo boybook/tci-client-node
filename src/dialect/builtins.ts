@@ -141,6 +141,25 @@ export const thetisDialect: TciDialect = new StandardTciDialect({
   },
 });
 
+export const aetherSdrDialect: TciDialect = new StandardTciDialect({
+  id: 'aethersdr-1.5', label: 'AetherSDR / TCI 1.5 hybrid', streamLengthSemantics: 'scalar',
+  supportsStreamChannels: true, supportsTxAudioSource: true, driveHasTrx: true,
+  detect: (context) => {
+    if (!/^aethersdr$/i.test(context.identity.device ?? '')) return { score: 0, evidence: [] };
+    const evidence = [`AetherSDR device identity: ${context.identity.device}`];
+    const modernAudioCommands = ['audio_stream_sample_type', 'audio_stream_channels', 'audio_stream_samples']
+      .filter((name) => context.commandNames.has(name));
+    if (modernAudioCommands.length > 0) evidence.push(`Modern audio negotiation: ${modernAudioCommands.join(', ')}`);
+    return {
+      score: 150,
+      evidence,
+      warnings: context.identity.protocolVersion === '1.5'
+        ? ['AetherSDR reports TCI 1.5 but uses modern scalar audio stream semantics']
+        : [],
+    };
+  },
+});
+
 export const genericObservedDialect: TciDialect = new StandardTciDialect({
   id: 'generic-observed', label: 'Generic observed TCI', streamLengthSemantics: 'auto',
   supportsStreamChannels: true, supportsTxAudioSource: true, driveHasTrx: true,
@@ -165,7 +184,7 @@ export const genericObservedDialect: TciDialect = new StandardTciDialect({
 });
 
 export const builtInDialects: readonly TciDialect[] = [
-  thetisDialect, expertSdr14Dialect, expertSdrLegacyDialect, expertSdrModernDialect, genericObservedDialect,
+  aetherSdrDialect, thetisDialect, expertSdr14Dialect, expertSdrLegacyDialect, expertSdrModernDialect, genericObservedDialect,
 ];
 
 export function parseTciVersion(value: string | undefined): VersionTuple | undefined {

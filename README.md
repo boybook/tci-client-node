@@ -9,7 +9,7 @@ TCI is a WebSocket protocol: text commands are used for CAT-style radio control,
 `0.2.x` provides a dialect-aware client for application integrations:
 
 - Strict WebSocket and READY/startup handshake validation
-- Automatic ExpertSDR 1.4, 1.5-1.8, 1.9-2.0, and Thetis dialect selection
+- Automatic ExpertSDR 1.4, 1.5-1.8, 1.9-2.0, AetherSDR, and Thetis dialect selection
 - Manual and externally registered dialect implementations
 - Frequency, mode, PTT, tune, drive, split, and CW text/macros
 - RX and TX sensor state parsing
@@ -71,7 +71,7 @@ await client.setPtt(true, { source: 'tci' });
 
 ## Dialects
 
-The high-level client delegates command shapes and binary stream semantics to a `TciDialect`. Built-in dialects are `expertsdr-1.4`, `expertsdr-1.5-1.8`, `expertsdr-1.9-2.0`, `thetis-2.0`, and `generic-observed`.
+The high-level client delegates command shapes and binary stream semantics to a `TciDialect`. Built-in dialects are `expertsdr-1.4`, `expertsdr-1.5-1.8`, `expertsdr-1.9-2.0`, `aethersdr-1.5`, `thetis-2.0`, and `generic-observed`.
 
 `generic-observed` derives legacy versus TRX-indexed `DRIVE` syntax from startup state. Applications can provide a custom dialect directly or use a custom `TciDialectRegistry`.
 
