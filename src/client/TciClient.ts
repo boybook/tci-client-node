@@ -371,13 +371,19 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   async setTune(enabled: boolean, trx = this.options.trx, options: TciWriteOptions = {}): Promise<void> {
-    await this.sendStateWrite(
-      'TUNE',
-      [trx, enabled],
-      (state) => state.tune[String(trx)] === enabled,
-      `TUNE:${trx},${enabled}`,
-      options,
-    );
+    try {
+      await this.sendStateWrite(
+        'TUNE',
+        [trx, enabled],
+        (state) => state.tune[String(trx)] === enabled,
+        `TUNE:${trx},${enabled}`,
+        options,
+      );
+    } catch (error) {
+      if (!(error instanceof TciError) || error.code !== 'command-timeout') throw error;
+      await this.request('TUNE', [trx], { timeoutMs: options.timeoutMs });
+      if (this.state.tune[String(trx)] !== enabled) throw error;
+    }
   }
 
   async setDrive(value: number, trx = this.options.trx): Promise<void> {
@@ -457,13 +463,19 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   async setSplit(enabled: boolean, trx = this.options.trx, options: TciWriteOptions = {}): Promise<void> {
-    await this.sendStateWrite(
-      'SPLIT_ENABLE',
-      [trx, enabled],
-      (state) => state.split[String(trx)] === enabled,
-      `SPLIT_ENABLE:${trx},${enabled}`,
-      options,
-    );
+    try {
+      await this.sendStateWrite(
+        'SPLIT_ENABLE',
+        [trx, enabled],
+        (state) => state.split[String(trx)] === enabled,
+        `SPLIT_ENABLE:${trx},${enabled}`,
+        options,
+      );
+    } catch (error) {
+      if (!(error instanceof TciError) || error.code !== 'command-timeout') throw error;
+      await this.request('SPLIT_ENABLE', [trx], { timeoutMs: options.timeoutMs });
+      if (this.state.split[String(trx)] !== enabled) throw error;
+    }
   }
 
   async configureAudio(config: TciAudioConfig): Promise<void> {
