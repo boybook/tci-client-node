@@ -1,5 +1,8 @@
 export type TciErrorCode =
   | 'connect-timeout'
+  | 'handshake-timeout'
+  | 'invalid-handshake'
+  | 'unknown-dialect'
   | 'command-timeout'
   | 'not-connected'
   | 'disconnected'

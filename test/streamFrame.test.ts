@@ -23,7 +23,7 @@ it('parses and builds little-endian stream headers', () => {
     channels: 2,
     samples,
   });
-  expect(raw.readUInt32LE(5 * 4)).toBe(2);
+  expect(raw.readUInt32LE(5 * 4)).toBe(4);
   const frame = parseStreamFrame(raw);
   expect(frame.receiver).toBe(1);
   expect(frame.sampleRate).toBe(12_000);
@@ -31,7 +31,8 @@ it('parses and builds little-endian stream headers', () => {
   expect(frame.streamType).toBe(TciStreamType.RX_AUDIO_STREAM);
   expect(frame.channels).toBe(2);
   expect(frame.payloadLength).toBe(samples.byteLength);
-  expect(frame.sampleCount).toBe(2);
+  expect(frame.sampleCount).toBe(4);
+  expect(frame.frameCount).toBe(2);
   expect(Array.from(payloadToFloat32(frame))).toEqual(Array.from(samples));
 });
 
@@ -86,12 +87,15 @@ it('infers channels from legacy 1.8-style headers without the channels field', (
     sampleType: 'float32',
     streamType: TciStreamType.RX_AUDIO_STREAM,
     channels: 2,
+    lengthSemantics: 'per-channel',
     samples: new Float32Array([0, 0.25, 0.5, 0.75]),
   });
   raw.writeUInt32LE(0, 7 * 4);
-  const frame = parseStreamFrame(raw);
+  const frame = parseStreamFrame(raw, { lengthSemantics: 'per-channel' });
   expect(frame.channels).toBe(2);
-  expect(frame.sampleCount).toBe(2);
+  expect(frame.headerSampleCount).toBe(2);
+  expect(frame.sampleCount).toBe(4);
+  expect(frame.frameCount).toBe(2);
 });
 
 it('converts int16/int24/int32/float32 payloads to float32', () => {

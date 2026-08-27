@@ -1,10 +1,13 @@
 {
   "name": "tci-client-node",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Pure TypeScript TCI (Transceiver Control Interface) client for SunSDR/ExpertSDR.",
   "type": "module",
   "license": "MIT",
   "author": "boybook",
+  "engines": {
+    "node": ">=20"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/boybook/tci-client-node.git"
@@ -26,6 +29,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "main": "./dist/index.cjs",
@@ -62,6 +66,16 @@
       "types": "./dist/audio/index.d.ts",
       "import": "./dist/audio/index.js",
       "require": "./dist/audio/index.cjs"
+    },
+    "./dialect": {
+      "types": "./dist/dialect/index.d.ts",
+      "import": "./dist/dialect/index.js",
+      "require": "./dist/dialect/index.cjs"
+    },
+    "./transport": {
+      "types": "./dist/transport/index.d.ts",
+      "import": "./dist/transport/index.js",
+      "require": "./dist/transport/index.cjs"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",

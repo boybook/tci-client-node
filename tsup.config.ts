@@ -5,6 +5,8 @@ export default defineConfig({
     index: 'src/index.ts',
     'protocol/index': 'src/protocol/index.ts',
     'audio/index': 'src/audio/index.ts',
+    'dialect/index': 'src/dialect/index.ts',
+    'transport/index': 'src/transport/index.ts',
     'testing/index': 'src/testing/index.ts',
   },
   format: ['esm', 'cjs'],
@@ -12,7 +14,7 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   splitting: false,
-  target: 'node18',
+  target: 'node20',
   outDir: 'dist',
   outExtension({ format }) {
     return { js: format === 'cjs' ? '.cjs' : '.js' };
