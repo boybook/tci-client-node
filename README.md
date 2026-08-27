@@ -6,9 +6,11 @@ TCI is a WebSocket protocol: text commands are used for CAT-style radio control,
 
 ## Status
 
-`0.1.x` focuses on the subset needed by application integrations:
+`0.2.x` provides a dialect-aware client for application integrations:
 
-- WebSocket lifecycle and READY/startup state handling
+- Strict WebSocket and READY/startup handshake validation
+- Automatic ExpertSDR 1.4, 1.5-1.8, 1.9-2.0, and Thetis dialect selection
+- Manual and externally registered dialect implementations
 - Frequency, mode, PTT, tune, drive, split, and CW text/macros
 - RX and TX sensor state parsing
 - RX audio, TX audio, TX_CHRONO, and line-out stream frame parsing/building
@@ -48,10 +50,11 @@ client.on('rxAudioFrame', (frame) => {
 client.on('txChrono', (request) => {
   // The host application decides what to transmit.
   // Send silence if no TX audio is ready.
-  client.sendTxAudioForChrono(request, new Float32Array(request.sampleCount * request.channels));
+  client.sendTxAudioForChrono(request, new Float32Array(request.sampleCount));
 });
 
-await client.connect();
+const handshake = await client.connect();
+console.log(handshake.identity, handshake.dialect.dialect.id);
 await client.setFrequency(14_074_000);
 await client.setMode('digu');
 await client.configureAudio({
@@ -64,20 +67,43 @@ await client.startAudio();
 await client.setPtt(true, { source: 'tci' });
 ```
 
+`connect()` resolves only after a valid `READY;` initialization sequence. A WebSocket that opens but does not provide enough TCI initialization evidence is rejected. Use `dialect: 'thetis-2.0'` or another dialect ID only when an incomplete server cannot be identified automatically.
+
+## Dialects
+
+The high-level client delegates command shapes and binary stream semantics to a `TciDialect`. Built-in dialects are `expertsdr-1.4`, `expertsdr-1.5-1.8`, `expertsdr-1.9-2.0`, `thetis-2.0`, and `generic-observed`.
+
+`generic-observed` derives legacy versus TRX-indexed `DRIVE` syntax from startup state. Applications can provide a custom dialect directly or use a custom `TciDialectRegistry`.
+
+## Power Writes
+
+Servers may apply a local band or PA safety limit and broadcast a different drive value. Use the detailed result when the difference matters:
+
+```ts
+const result = await client.setDriveWithResult(100);
+// { requested: 100, applied: 50, outcome: 'clamped', acknowledgement: 'state' }
+```
+
+The compatibility `setDrive()` method remains available and treats a clamped value as a successful write rather than a timeout.
+
 ## Subpath Exports
 
 - `tci-client-node`: `TciClient`, `createTciClient`, high-level radio/audio API, errors, and core types.
 - `tci-client-node/protocol`: text command parser/formatter, escaping helpers, and command queue.
 - `tci-client-node/audio`: stream frame parser/builder and sample conversion helpers.
+- `tci-client-node/dialect`: dialect interfaces, built-ins, detection, and registry.
+- `tci-client-node/transport`: transport interface and default WebSocket transport.
 - `tci-client-node/testing`: `MockTciServer` and `FakeWebSocket` helpers for tests.
 
 ## Audio Frames
 
 The official TCI `Stream` header is 16 little-endian `uint32` fields. In this package:
 
-- `sampleCount` maps to the official `Stream.length` field from the header.
+- `headerSampleCount` is the raw `Stream.length` field.
+- `sampleCount` is the canonical scalar value count across all channels.
+- `frameCount` is `sampleCount / channels`.
 - `payloadLength` is the actual byte length after the 64-byte header. `TX_CHRONO` frames are valid with no payload.
-- `channels` is read from the TCI 1.9+ header. If a legacy 1.8-style frame has no channel field, the parser infers it from payload size.
+- Modern TCI uses scalar length semantics. Legacy dialects use per-channel length semantics and may omit the channel field; the selected dialect supplies the required context.
 
 Supported sample types are `int16`, `int24`, `int32`, and `float32`.
 

@@ -38,6 +38,7 @@ export class MockTciServer {
   private frequency = 14_074_000;
   private mode = 'DIGU';
   private ptt = false;
+  private drive = 30;
 
   constructor(options: MockTciServerOptions = {}) {
     this.options = {
@@ -147,13 +148,14 @@ export class MockTciServer {
     socket.on('message', (data, isBinary) => void this.handleMessage(socket, data, isBinary));
 
     const startupCommands = this.options.startupCommands ?? [
-      'PROTOCOL:2.0;',
+      'PROTOCOL:ExpertSDR3,2.0;',
       'DEVICE:Mock ExpertSDR3;',
       'MODULATIONS_LIST:LSB,USB,CW,AM,NFM,DIGU,DIGL;',
       `VFO:0,0,${this.frequency};`,
       `MODULATION:0,${this.mode};`,
       `TRX:0,${this.ptt};`,
-      'READY:true;',
+      `DRIVE:0,${this.drive};`,
+      'READY;',
     ];
     queueMicrotask(() => {
       for (const command of startupCommands) {
@@ -216,8 +218,15 @@ export class MockTciServer {
         socket.send(formatTciCommand('TRX', [trx, this.ptt]));
         break;
       }
+      case 'drive': {
+        const hasTrx = command.args.length >= 2;
+        const trx = hasTrx ? command.args[0] ?? '0' : '0';
+        const valueArg = command.args[hasTrx ? 1 : 0];
+        if (valueArg !== undefined) this.drive = Number(valueArg);
+        socket.send(formatTciCommand('DRIVE', [trx, this.drive]));
+        break;
+      }
       case 'tune':
-      case 'drive':
       case 'split_enable':
       case 'cw_macros':
       case 'cw_msg':

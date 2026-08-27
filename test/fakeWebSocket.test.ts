@@ -12,8 +12,10 @@ it('drives TciClient with the in-memory fake WebSocket transport', async () => {
     }),
   });
 
-  await client.connect();
-  socket!.receive('PROTOCOL:2.0;READY:true;');
+  const connecting = client.connect();
+  await Promise.resolve();
+  socket!.receive('PROTOCOL:ExpertSDR3,2.0;DEVICE:SunSDR2PRO;VFO:0,0,7100000;READY;');
+  await connecting;
 
   const frequency = client.setFrequency(14_074_000);
   expect(socket!.sentMessages.at(-1)?.data).toBe('VFO:0,0,14074000;');

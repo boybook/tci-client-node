@@ -19,6 +19,22 @@ import {
   type QueueCommandOptions,
   type TciCommand,
 } from '../protocol/index.js';
+import {
+  assertValidTciHandshake,
+  defaultTciDialectRegistry,
+  parseProtocolIdentity,
+  type TciDialect,
+  type TciDialectId,
+  type TciDialectRegistry,
+  type TciDialectSelection,
+  type TciHandshakeResult,
+  type TciWriteResult,
+} from '../dialect/index.js';
+import {
+  WebSocketTciTransport,
+  type TciTransport,
+  type TciTransportFactory,
+} from '../transport/index.js';
 
 export interface TciClientOptions {
   url: string;
@@ -26,12 +42,16 @@ export interface TciClientOptions {
   trx?: number;
   vfo?: number;
   connectTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
   commandTimeoutMs?: number;
   writeAckMode?: TciWriteAckMode;
   writeTimeoutMs?: number;
   writeSettleMs?: number;
   frequencyWriteSettleMs?: number;
+  dialect?: TciDialectSelection;
+  dialectRegistry?: TciDialectRegistry;
   WebSocketImpl?: typeof WebSocket;
+  transportFactory?: TciTransportFactory;
 }
 
 export interface TciAudioConfig {
@@ -65,12 +85,18 @@ export interface TciTxChronoRequest {
   channels: number;
   sampleType: TciSampleType;
   sampleCount: number;
+  frameCount: number;
 }
 
 export interface TciClientState {
   connected: boolean;
   ready: boolean;
   protocol?: string;
+  protocolName?: string;
+  protocolVersion?: string;
+  dialectId?: TciDialectId;
+  dialectConfidence?: TciHandshakeResult['dialect']['confidence'];
+  dialectWarnings: string[];
   device?: string;
   receiveOnly?: boolean;
   trxCount?: number;
@@ -84,6 +110,7 @@ export interface TciClientState {
   pttSource: Record<string, string | undefined>;
   tune: Record<string, boolean>;
   drive: Record<string, number>;
+  tuneDrive: Record<string, number>;
   split: Record<string, boolean>;
   rxSensors: Record<string, Record<string, number | string | boolean>>;
   txSensors: Record<string, Record<string, number | string | boolean>>;
@@ -97,6 +124,7 @@ export interface TciClientEvents {
   connected: () => void;
   disconnected: (reason?: unknown) => void;
   ready: (state: TciClientState) => void;
+  handshake: (result: TciHandshakeResult) => void;
   state: (state: TciClientState) => void;
   command: (command: TciCommand) => void;
   binary: (frame: TciStreamFrame) => void;
@@ -120,18 +148,31 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     | 'trx'
     | 'vfo'
     | 'connectTimeoutMs'
+    | 'handshakeTimeoutMs'
     | 'commandTimeoutMs'
     | 'writeAckMode'
     | 'writeTimeoutMs'
     | 'writeSettleMs'
     | 'frequencyWriteSettleMs'
   >> &
-    Pick<TciClientOptions, 'url'>;
+    Pick<TciClientOptions, 'url'> & { dialect: TciDialectSelection };
 
   private readonly WebSocketImpl: typeof WebSocket;
-  private ws?: WebSocket;
+  private readonly transportFactory: TciTransportFactory;
+  private transport?: TciTransport;
   private readonly queue: TciCommandQueue;
   private readonly state: TciClientState;
+  private readonly stateReducers: Map<string, (args: string[]) => void>;
+  private readonly dialectRegistry: TciDialectRegistry;
+  private activeDialect?: TciDialect;
+  private handshakeResult?: TciHandshakeResult;
+  private handshakeError?: TciError;
+  private initializationCommands: TciCommand[] = [];
+  private handshakeWaiter?: {
+    resolve: (result: TciHandshakeResult) => void;
+    reject: (error: TciError) => void;
+    timer: NodeJS.Timeout;
+  };
 
   constructor(options: TciClientOptions) {
     super();
@@ -141,13 +182,18 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       trx: options.trx ?? 0,
       vfo: options.vfo ?? 0,
       connectTimeoutMs: options.connectTimeoutMs ?? 5_000,
+      handshakeTimeoutMs: options.handshakeTimeoutMs ?? 10_000,
       commandTimeoutMs: options.commandTimeoutMs ?? 1_000,
       writeAckMode: options.writeAckMode ?? 'state',
       writeTimeoutMs: options.writeTimeoutMs ?? 3_000,
       writeSettleMs: options.writeSettleMs ?? 0,
       frequencyWriteSettleMs: options.frequencyWriteSettleMs ?? 250,
+      dialect: options.dialect ?? 'auto',
     };
+    this.dialectRegistry = options.dialectRegistry ?? defaultTciDialectRegistry;
     this.WebSocketImpl = options.WebSocketImpl ?? WebSocket;
+    this.transportFactory = options.transportFactory
+      ?? ((url) => new WebSocketTciTransport(url, this.WebSocketImpl));
     this.queue = new TciCommandQueue({
       timeoutMs: this.options.commandTimeoutMs,
       send: (raw) => this.sendRaw(raw),
@@ -163,62 +209,53 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       pttSource: {},
       tune: {},
       drive: {},
+      tuneDrive: {},
       split: {},
+      dialectWarnings: [],
       rxSensors: {},
       txSensors: {},
     };
+    this.stateReducers = this.createStateReducers();
   }
 
-  async connect(): Promise<void> {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      return;
+  async connect(): Promise<TciHandshakeResult> {
+    if (this.transport?.isConnected()) {
+      return this.handshakeResult ?? this.waitForHandshake();
     }
-    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
-      await this.waitForOpen(this.ws);
-      return;
+    this.resetHandshake();
+    const transport = this.transportFactory(this.options.url);
+    this.transport = transport;
+    this.attachTransport(transport);
+    await transport.connect(this.options.connectTimeoutMs);
+    this.state.connected = true;
+    this.queue.setConnected(true);
+    this.emit('connected');
+    this.emitState();
+    try {
+      return await this.waitForHandshake();
+    } catch (error) {
+      transport.terminate();
+      throw error;
     }
-
-    const ws = new this.WebSocketImpl(this.options.url);
-    this.ws = ws;
-    await this.waitForOpen(ws);
   }
 
   async disconnect(code = 1000, reason = 'client disconnect'): Promise<void> {
-    const ws = this.ws;
-    if (!ws) {
-      return;
-    }
-    if (ws.readyState === WebSocket.CLOSED) {
-      this.handleClose();
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      const cleanup = () => {
-        ws.off('close', onClose);
-        ws.off('error', onError);
-      };
-      const onClose = () => {
-        cleanup();
-        resolve();
-      };
-      const onError = () => {
-        cleanup();
-        resolve();
-      };
-      ws.once('close', onClose);
-      ws.once('error', onError);
-      ws.close(code, reason);
-      setTimeout(() => resolve(), 1_000).unref?.();
-    });
+    const transport = this.transport;
+    if (!transport) return;
+    await transport.disconnect(code, reason);
     this.handleClose();
   }
 
   isConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.transport?.isConnected() ?? false;
   }
 
   getState(): TciClientState {
     return cloneState(this.state);
+  }
+
+  getHandshakeResult(): TciHandshakeResult | undefined {
+    return this.handshakeResult ? cloneHandshake(this.handshakeResult) : undefined;
   }
 
   async sendCommand(name: string, args: readonly unknown[] = [], options: SendCommandOptions = {}): Promise<TciCommand | undefined> {
@@ -315,6 +352,9 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
   async setPtt(enabled: boolean, options: TciPttOptions = {}): Promise<void> {
     const trx = options.trx ?? this.options.trx;
+    if (options.source && !this.requireDialect().supportsTxAudioSource) {
+      throw new TciError('protocol-error', `TCI dialect ${this.requireDialect().id} does not support a TRX audio source argument`);
+    }
     const args = options.source ? [trx, enabled, options.source] : [trx, enabled];
     await this.sendStateWrite(
       'TRX',
@@ -330,19 +370,104 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     return parseBoolean(reply.args[1]) ?? this.state.ptt[String(trx)];
   }
 
-  async setTune(enabled: boolean, trx = this.options.trx): Promise<void> {
-    await this.sendCommand('TUNE', [trx, enabled]);
+  async setTune(enabled: boolean, trx = this.options.trx, options: TciWriteOptions = {}): Promise<void> {
+    await this.sendStateWrite(
+      'TUNE',
+      [trx, enabled],
+      (state) => state.tune[String(trx)] === enabled,
+      `TUNE:${trx},${enabled}`,
+      options,
+    );
   }
 
   async setDrive(value: number, trx = this.options.trx): Promise<void> {
-    await this.sendCommand('DRIVE', [trx, value]);
+    await this.setDriveWithResult(value, trx);
   }
 
-  async setSplit(enabled: boolean, trx = this.options.trx): Promise<void> {
-    await this.sendCommand('SPLIT_ENABLE', [trx, enabled]);
+  async setDriveWithResult(value: number, trx = this.options.trx, options: TciWriteOptions = {}): Promise<TciWriteResult<number>> {
+    const requested = normalizePercent(value);
+    const dialect = this.requireDialect();
+    if (this.state.drive[String(trx)] === requested) {
+      return writeResult(requested, requested, 'state');
+    }
+
+    const timeoutMs = options.timeoutMs ?? this.options.writeTimeoutMs;
+    const waiter = this.waitForCommand(
+      (command) => command.name === 'drive' && dialect.parseDrive(command.args, trx)?.trx === trx,
+      Math.min(500, timeoutMs),
+      `DRIVE state for TRX ${trx}`,
+    );
+    await this.sendCommand('DRIVE', dialect.buildDriveSetArgs(trx, requested), { waitForReply: false });
+    try {
+      const command = await waiter.promise;
+      const applied = dialect.parseDrive(command.args, trx)?.value;
+      if (applied !== undefined) return writeResult(requested, applied, 'state');
+    } catch (error) {
+      if (!(error instanceof TciError) || error.code !== 'command-timeout') throw error;
+    } finally {
+      waiter.cancel();
+    }
+
+    const reply = await this.request('DRIVE', dialect.buildDriveReadArgs(trx), {
+      timeoutMs: Math.max(1, timeoutMs - Math.min(500, timeoutMs)),
+    });
+    const applied = dialect.parseDrive(reply.args, trx)?.value;
+    if (applied === undefined) throw new TciError('protocol-error', `Invalid DRIVE readback: ${reply.raw}`);
+    return writeResult(requested, applied, 'readback');
+  }
+
+  async getDrive(trx = this.options.trx): Promise<number | undefined> {
+    const dialect = this.requireDialect();
+    const reply = await this.request('DRIVE', dialect.buildDriveReadArgs(trx));
+    return dialect.parseDrive(reply.args, trx)?.value ?? this.state.drive[String(trx)];
+  }
+
+  async setTuneDrive(value: number, trx = this.options.trx, options: TciWriteOptions = {}): Promise<TciWriteResult<number>> {
+    const requested = normalizePercent(value);
+    const dialect = this.requireDialect();
+    if (this.state.tuneDrive[String(trx)] === requested) return writeResult(requested, requested, 'state');
+    const timeoutMs = options.timeoutMs ?? this.options.writeTimeoutMs;
+    const waiter = this.waitForCommand(
+      (command) => command.name === 'tune_drive' && dialect.parseTuneDrive(command.args, trx)?.trx === trx,
+      Math.min(500, timeoutMs),
+      `TUNE_DRIVE state for TRX ${trx}`,
+    );
+    await this.sendCommand('TUNE_DRIVE', dialect.buildTuneDriveSetArgs(trx, requested), { waitForReply: false });
+    try {
+      const command = await waiter.promise;
+      const applied = dialect.parseTuneDrive(command.args, trx)?.value;
+      if (applied !== undefined) return writeResult(requested, applied, 'state');
+    } catch (error) {
+      if (!(error instanceof TciError) || error.code !== 'command-timeout') throw error;
+    } finally {
+      waiter.cancel();
+    }
+    const reply = await this.request('TUNE_DRIVE', dialect.buildTuneDriveReadArgs(trx), {
+      timeoutMs: Math.max(1, timeoutMs - Math.min(500, timeoutMs)),
+    });
+    const applied = dialect.parseTuneDrive(reply.args, trx)?.value;
+    if (applied === undefined) throw new TciError('protocol-error', `Invalid TUNE_DRIVE readback: ${reply.raw}`);
+    return writeResult(requested, applied, 'readback');
+  }
+
+  async getTuneDrive(trx = this.options.trx): Promise<number | undefined> {
+    const dialect = this.requireDialect();
+    const reply = await this.request('TUNE_DRIVE', dialect.buildTuneDriveReadArgs(trx));
+    return dialect.parseTuneDrive(reply.args, trx)?.value ?? this.state.tuneDrive[String(trx)];
+  }
+
+  async setSplit(enabled: boolean, trx = this.options.trx, options: TciWriteOptions = {}): Promise<void> {
+    await this.sendStateWrite(
+      'SPLIT_ENABLE',
+      [trx, enabled],
+      (state) => state.split[String(trx)] === enabled,
+      `SPLIT_ENABLE:${trx},${enabled}`,
+      options,
+    );
   }
 
   async configureAudio(config: TciAudioConfig): Promise<void> {
+    const dialect = this.requireDialect();
     const audio = {
       sampleRate: config.sampleRate,
       sampleType: normalizeSampleType(config.sampleType ?? TciSampleType.FLOAT32),
@@ -354,11 +479,13 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     this.state.audio = audio;
 
     await this.sendCommand('AUDIO_SAMPLERATE', [audio.sampleRate], { waitForReply: false });
-    await this.sendCommand('AUDIO_STREAM_SAMPLE_TYPE', [sampleTypeName(audio.sampleType)], { waitForReply: false });
-    await this.sendCommand('AUDIO_STREAM_CHANNELS', [audio.channels], { waitForReply: false });
-    await this.sendCommand('AUDIO_STREAM_SAMPLES', [audio.samplesPerFrame], { waitForReply: false });
-    if (audio.txBufferingMs !== undefined) {
-      await this.sendCommand('TX_STREAM_AUDIO_BUFFERING', [audio.txBufferingMs], { waitForReply: false });
+    if (dialect.supportsStreamChannels) {
+      await this.sendCommand('AUDIO_STREAM_SAMPLE_TYPE', [sampleTypeName(audio.sampleType)], { waitForReply: false });
+      await this.sendCommand('AUDIO_STREAM_CHANNELS', [audio.channels], { waitForReply: false });
+      await this.sendCommand('AUDIO_STREAM_SAMPLES', [audio.samplesPerFrame], { waitForReply: false });
+      if (audio.txBufferingMs !== undefined) {
+        await this.sendCommand('TX_STREAM_AUDIO_BUFFERING', [audio.txBufferingMs], { waitForReply: false });
+      }
     }
     this.emitState();
   }
@@ -380,13 +507,17 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   sendTxAudio(options: BuildTxAudioFrameOptions): void {
-    const frame = buildTxAudioFrame({ receiver: this.options.receiver, ...options });
+    const frame = buildTxAudioFrame({
+      receiver: this.options.receiver,
+      lengthSemantics: this.requireDialect().streamLengthSemantics,
+      ...options,
+    });
     this.sendRawBinary(frame);
   }
 
   sendTxAudioForChrono(request: TciTxChronoRequest, samples: Float32Array | readonly number[]): void {
     const channels = Math.max(1, Math.floor(request.channels || 1));
-    const targetSampleLength = Math.max(0, Math.floor(request.sampleCount) * channels);
+    const targetSampleLength = Math.max(0, Math.floor(request.sampleCount));
     const output = new Float32Array(targetSampleLength);
     const source = samples instanceof Float32Array ? samples : Float32Array.from(samples);
     output.set(source.subarray(0, output.length));
@@ -505,84 +636,151 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     };
   }
 
-  private waitForOpen(ws: WebSocket): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+  private waitForCommand(
+    predicate: (command: TciCommand) => boolean,
+    timeoutMs: number,
+    description: string,
+  ): { promise: Promise<TciCommand>; cancel: () => void } {
+    let timer: NodeJS.Timeout | undefined;
+    let resolvePromise!: (command: TciCommand) => void;
+    let rejectPromise!: (error: TciError) => void;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      this.off('command', onCommand);
+      this.off('disconnected', onDisconnected);
+    };
+    const onCommand = (command: TciCommand) => {
+      if (!predicate(command)) return;
+      cleanup();
+      resolvePromise(command);
+    };
+    const onDisconnected = () => {
+      cleanup();
+      rejectPromise(new TciError('disconnected', `Disconnected while waiting for ${description}`));
+    };
+    const promise = new Promise<TciCommand>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+      timer = setTimeout(() => {
         cleanup();
-        try {
-          ws.terminate();
-        } catch {
-          // ignore termination races
-        }
-        reject(new TciError('connect-timeout', `Timed out connecting to ${this.options.url}`));
-      }, this.options.connectTimeoutMs);
+        reject(new TciError('command-timeout', `Timed out waiting for ${description}`));
+      }, timeoutMs);
+      this.on('command', onCommand);
+      this.on('disconnected', onDisconnected);
+    });
+    return { promise, cancel: cleanup };
+  }
 
-      const cleanup = () => {
-        clearTimeout(timer);
-        ws.off('open', onOpen);
-        ws.off('close', onClose);
-        ws.off('error', onError);
-      };
-      const onOpen = () => {
-        cleanup();
-        this.attachSocket(ws);
-        this.state.connected = true;
-        this.queue.setConnected(true);
-        this.emit('connected');
-        this.emitState();
-        resolve();
-      };
-      const onClose = () => {
-        cleanup();
-        this.handleClose();
-        reject(new TciError('disconnected', `Disconnected while connecting to ${this.options.url}`));
-      };
-      const onError = (error: Error) => {
-        cleanup();
-        this.handleError(error);
-        reject(toTciError(error, 'disconnected'));
-      };
-      ws.once('open', onOpen);
-      ws.once('close', onClose);
-      ws.once('error', onError);
+  private resetHandshake(): void {
+    this.rejectHandshake(new TciError('cancelled', 'TCI handshake replaced by a new connection'));
+    this.handshakeResult = undefined;
+    this.handshakeError = undefined;
+    this.activeDialect = undefined;
+    this.initializationCommands = [];
+    this.state.ready = false;
+    this.state.protocol = undefined;
+    this.state.protocolName = undefined;
+    this.state.protocolVersion = undefined;
+    this.state.dialectId = undefined;
+    this.state.dialectConfidence = undefined;
+    this.state.dialectWarnings = [];
+  }
+
+  private waitForHandshake(): Promise<TciHandshakeResult> {
+    if (this.handshakeResult) return Promise.resolve(cloneHandshake(this.handshakeResult));
+    if (this.handshakeError) return Promise.reject(this.handshakeError);
+    if (this.handshakeWaiter) {
+      return new Promise((resolve, reject) => {
+        const onHandshake = (result: TciHandshakeResult) => { cleanup(); resolve(result); };
+        const onError = (error: TciError) => { cleanup(); reject(error); };
+        const cleanup = () => { this.off('handshake', onHandshake); this.off('error', onError); };
+        this.once('handshake', onHandshake);
+        this.once('error', onError);
+      });
+    }
+    return new Promise<TciHandshakeResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const error = new TciError('handshake-timeout', `Timed out waiting for TCI READY from ${this.options.url}`);
+        this.handshakeWaiter = undefined;
+        reject(error);
+      }, this.options.handshakeTimeoutMs);
+      this.handshakeWaiter = { resolve, reject, timer };
     });
   }
 
-  private attachSocket(ws: WebSocket): void {
-    ws.on('message', (data, isBinary) => this.handleMessage(data, isBinary));
-    ws.on('close', () => this.handleClose());
-    ws.on('error', (error) => this.handleError(error));
+  private finalizeHandshake(): TciHandshakeResult {
+    if (this.handshakeResult) return this.handshakeResult;
+    assertValidTciHandshake(this.initializationCommands);
+    const identity = parseProtocolIdentity(this.initializationCommands);
+    const commandNames = [...new Set(this.initializationCommands.map((command) => command.name))];
+    const dialect = this.dialectRegistry.select(
+      { identity, commands: this.initializationCommands, commandNames: new Set(commandNames) },
+      this.options.dialect,
+    );
+    const result: TciHandshakeResult = { identity, dialect, ready: true, commandNames };
+    this.handshakeResult = result;
+    this.activeDialect = dialect.dialect;
+    this.state.protocolName = identity.programName;
+    this.state.protocolVersion = identity.protocolVersion;
+    this.state.protocol = identity.protocolVersion ?? identity.programName;
+    this.state.device = identity.device ?? this.state.device;
+    this.state.dialectId = dialect.dialect.id;
+    this.state.dialectConfidence = dialect.confidence;
+    this.state.dialectWarnings = [...dialect.warnings];
+    const waiter = this.handshakeWaiter;
+    this.handshakeWaiter = undefined;
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(cloneHandshake(result));
+    }
+    this.emit('handshake', cloneHandshake(result));
+    return result;
+  }
+
+  private rejectHandshake(error: TciError): void {
+    const waiter = this.handshakeWaiter;
+    this.handshakeWaiter = undefined;
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    waiter.reject(error);
+  }
+
+  private requireDialect(): TciDialect {
+    if (!this.activeDialect) throw new TciError('invalid-handshake', 'TCI dialect is not available before READY');
+    return this.activeDialect;
+  }
+
+  private attachTransport(transport: TciTransport): void {
+    transport.on('text', (raw) => this.handleText(raw));
+    transport.on('binary', (raw) => this.handleBinary(raw));
+    transport.on('disconnected', (reason) => this.handleClose(reason));
+    transport.on('error', (error) => this.handleError(error));
   }
 
   private async sendRaw(raw: string): Promise<void> {
-    const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    const transport = this.transport;
+    if (!transport?.isConnected()) {
       throw new TciError('not-connected', 'TCI socket is not connected');
     }
     this.emit('tci:tx', raw);
-    await new Promise<void>((resolve, reject) => {
-      ws.send(raw, (error) => (error ? reject(error) : resolve()));
-    });
+    await transport.sendText(raw);
   }
 
   private sendRawBinary(raw: Buffer): void {
-    const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    const transport = this.transport;
+    if (!transport?.isConnected()) {
       throw new TciError('not-connected', 'TCI socket is not connected');
     }
-    ws.send(raw, { binary: true });
+    void transport.sendBinary(raw).catch((error) => this.handleError(error));
   }
 
-  private handleMessage(data: WebSocket.RawData, isBinary: boolean): void {
+  private handleText(raw: string): void {
     try {
-      if (isBinary) {
-        this.handleBinary(data);
-        return;
-      }
-      const raw = dataToBuffer(data).toString('utf8');
       const commands = parseTciText(raw);
       this.emit('tci:rx', raw, commands);
       for (const command of commands) {
+        if (!this.handshakeResult) this.initializationCommands.push(command);
         this.queue.handleCommand(command);
         this.applyCommand(command);
         this.emit('command', command);
@@ -592,8 +790,11 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     }
   }
 
-  private handleBinary(data: WebSocket.RawData): void {
-    const frame = parseStreamFrame(dataToBuffer(data));
+  private handleBinary(data: Buffer): void {
+    const frame = parseStreamFrame(data, {
+      lengthSemantics: this.requireDialect().streamLengthSemantics,
+      negotiatedChannels: this.state.audio?.channels,
+    });
     this.emit('tci:binary', frame);
     this.emit('binary', frame);
     switch (frame.streamType) {
@@ -608,6 +809,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
           channels: frame.channels,
           sampleType: frame.sampleType,
           sampleCount: frame.sampleCount,
+          frameCount: frame.frameCount,
         });
         break;
       case TciStreamType.LINEOUT_STREAM:
@@ -620,80 +822,65 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
   private applyCommand(command: TciCommand): void {
     const readyBefore = this.state.ready;
-    switch (command.name) {
-      case 'ready':
-        this.state.ready = command.args.length === 0 ? true : (parseBoolean(command.args[0]) ?? true);
-        break;
-      case 'protocol':
-        this.state.protocol = command.args[0];
-        break;
-      case 'device':
-        this.state.device = command.args.join(',');
-        break;
-      case 'receive_only':
-        this.state.receiveOnly = parseBoolean(command.args[0]);
-        break;
-      case 'trx_count':
-        this.state.trxCount = parseNumber(command.args[0]);
-        break;
-      case 'channels_count':
-      case 'channel_count':
-        this.state.channelCount = parseNumber(command.args[0]);
-        break;
-      case 'vfo_limits':
-        this.state.vfoLimits = parseNumberPair(command.args);
-        break;
-      case 'if_limits':
-        this.state.ifLimits = parseNumberPair(command.args);
-        break;
-      case 'modulations_list':
-        this.state.modulations = command.args.map((mode) => mode.toLowerCase());
-        break;
-      case 'vfo':
-        this.applyVfo(command.args);
-        break;
-      case 'modulation':
-        this.applyModulation(command.args);
-        break;
-      case 'trx':
-        this.applyTrx(command.args);
-        break;
-      case 'tune':
-        this.applyBooleanByFirstArg(this.state.tune, command.args);
-        break;
-      case 'drive':
-        this.applyDrive(command.args);
-        break;
-      case 'split_enable':
-        this.applyBooleanByFirstArg(this.state.split, command.args);
-        break;
-      case 'rx_channel_sensors':
-        this.applyRxChannelSensors(command.args);
-        break;
-      case 'rx_sensors':
-        this.applyRxSensors(command.args);
-        break;
-      case 'tx_sensors':
-        this.applyTxSensors(command.args);
-        break;
-      case 'audio_samplerate':
-        this.state.audio = {
-          sampleRate: parseNumber(command.args[0]) ?? this.state.audio?.sampleRate ?? 12_000,
-          sampleType: this.state.audio?.sampleType ?? TciSampleType.FLOAT32,
-          channels: this.state.audio?.channels ?? 1,
-          samplesPerFrame: this.state.audio?.samplesPerFrame ?? 512,
-          txBufferingMs: this.state.audio?.txBufferingMs,
-          running: this.state.audio?.running ?? false,
-        };
-        break;
-      default:
-        break;
-    }
+    this.stateReducers.get(command.name)?.(command.args);
 
     if (!readyBefore && this.state.ready) {
-      this.emit('ready', this.getState());
+      try {
+        this.finalizeHandshake();
+        this.emit('ready', this.getState());
+      } catch (error) {
+        const tciError = toTciError(error, 'invalid-handshake');
+        this.handshakeError = tciError;
+        this.state.ready = false;
+        this.rejectHandshake(tciError);
+        this.handleError(tciError);
+      }
     }
     this.emitState();
+  }
+
+  private createStateReducers(): Map<string, (args: string[]) => void> {
+    const reducers = new Map<string, (args: string[]) => void>();
+    reducers.set('ready', (args) => {
+      this.state.ready = args.length === 0 ? true : (parseBoolean(args[0]) ?? true);
+    });
+    reducers.set('protocol', (args) => {
+        if (/^\d+(?:\.\d+){0,2}/.test(args[0] ?? '')) {
+          this.state.protocol = args[0];
+          this.state.protocolVersion = args[0];
+        } else {
+          this.state.protocolName = args[0];
+          this.state.protocolVersion = args[1];
+          this.state.protocol = args[1] ?? args[0];
+        }
+    });
+    reducers.set('device', (args) => { this.state.device = args.join(','); });
+    reducers.set('receive_only', (args) => { this.state.receiveOnly = parseBoolean(args[0]); });
+    reducers.set('trx_count', (args) => { this.state.trxCount = parseNumber(args[0]); });
+    const channelCount = (args: string[]) => { this.state.channelCount = parseNumber(args[0]); };
+    reducers.set('channels_count', channelCount);
+    reducers.set('channel_count', channelCount);
+    reducers.set('vfo_limits', (args) => { this.state.vfoLimits = parseNumberPair(args); });
+    reducers.set('if_limits', (args) => { this.state.ifLimits = parseNumberPair(args); });
+    reducers.set('modulations_list', (args) => { this.state.modulations = args.map((mode) => mode.toLowerCase()); });
+    reducers.set('vfo', (args) => this.applyVfo(args));
+    reducers.set('modulation', (args) => this.applyModulation(args));
+    reducers.set('trx', (args) => this.applyTrx(args));
+    reducers.set('tune', (args) => this.applyBooleanByFirstArg(this.state.tune, args));
+    reducers.set('drive', (args) => this.applyDrive(args));
+    reducers.set('tune_drive', (args) => this.applyTuneDrive(args));
+    reducers.set('split_enable', (args) => this.applyBooleanByFirstArg(this.state.split, args));
+    reducers.set('rx_channel_sensors', (args) => this.applyRxChannelSensors(args));
+    reducers.set('rx_sensors', (args) => this.applyRxSensors(args));
+    reducers.set('tx_sensors', (args) => this.applyTxSensors(args));
+    reducers.set('audio_samplerate', (args) => this.updateAudioState({ sampleRate: parseNumber(args[0]) }));
+    reducers.set('audio_stream_sample_type', (args) => this.updateAudioState({ sampleType: parseSampleType(args[0]) }));
+    reducers.set('audio_stream_channels', (args) => this.updateAudioState({ channels: parseNumber(args[0]) }));
+    reducers.set('audio_stream_samples', (args) => this.updateAudioState({ samplesPerFrame: parseNumber(args[0]) }));
+    reducers.set('tx_stream_audio_buffering', (args) => this.updateAudioState({ txBufferingMs: parseNumber(args[0]) }));
+    reducers.set('audio_start', () => this.updateAudioState({ running: true }));
+    reducers.set('audio_stop', () => this.updateAudioState({ running: false }));
+    return reducers;
   }
 
   private applyVfo(args: string[]): void {
@@ -746,18 +933,26 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   private applyDrive(args: string[]): void {
-    if (args.length === 1) {
-      const value = parseNumber(args[0]);
-      if (value !== undefined) {
-        this.state.drive[String(this.options.trx)] = value;
-      }
-      return;
-    }
-    const trx = args[0] ?? String(this.options.trx);
-    const value = parseNumber(args[1]);
-    if (value !== undefined) {
-      this.state.drive[trx] = value;
-    }
+    const parsed = this.activeDialect?.parseDrive(args, this.options.trx)
+      ?? parseObservedDrive(args, this.options.trx);
+    if (parsed) this.state.drive[String(parsed.trx)] = parsed.value;
+  }
+
+  private applyTuneDrive(args: string[]): void {
+    const parsed = this.activeDialect?.parseTuneDrive(args, this.options.trx)
+      ?? parseObservedDrive(args, this.options.trx);
+    if (parsed) this.state.tuneDrive[String(parsed.trx)] = parsed.value;
+  }
+
+  private updateAudioState(update: Partial<NonNullable<TciClientState['audio']>>): void {
+    this.state.audio = {
+      sampleRate: update.sampleRate ?? this.state.audio?.sampleRate ?? 12_000,
+      sampleType: update.sampleType ?? this.state.audio?.sampleType ?? TciSampleType.FLOAT32,
+      channels: update.channels ?? this.state.audio?.channels ?? 1,
+      samplesPerFrame: update.samplesPerFrame ?? this.state.audio?.samplesPerFrame ?? 512,
+      txBufferingMs: update.txBufferingMs ?? this.state.audio?.txBufferingMs,
+      running: update.running ?? this.state.audio?.running ?? false,
+    };
   }
 
   private applyRxChannelSensors(args: string[]): void {
@@ -797,11 +992,14 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   private handleClose(reason?: unknown): void {
-    this.ws = undefined;
+    const transport = this.transport;
+    this.transport = undefined;
+    transport?.removeAllListeners();
     const wasConnected = this.state.connected;
     this.state.connected = false;
     this.state.ready = false;
     this.queue.setConnected(false);
+    this.rejectHandshake(new TciError('disconnected', 'TCI connection closed during handshake', reason));
     if (wasConnected) {
       this.emit('disconnected', reason);
       this.emitState();
@@ -820,19 +1018,6 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
 export function createTciClient(options: TciClientOptions): TciClient {
   return new TciClient(options);
-}
-
-function dataToBuffer(data: WebSocket.RawData): Buffer {
-  if (Buffer.isBuffer(data)) {
-    return data;
-  }
-  if (data instanceof ArrayBuffer) {
-    return Buffer.from(data);
-  }
-  if (Array.isArray(data)) {
-    return Buffer.concat(data.map((item) => dataToBuffer(item)));
-  }
-  throw new TciError('protocol-error', 'Unsupported WebSocket data type');
 }
 
 function rxVfoKey(receiver: string | number, vfo: string | number): string {
@@ -861,6 +1046,31 @@ function parseBoolean(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
+function parseSampleType(value: string | undefined): TciSampleType | undefined {
+  if (!value) return undefined;
+  try { return normalizeSampleType(value.toLowerCase() as TciSampleTypeName); } catch { return undefined; }
+}
+
+function parseObservedDrive(args: readonly string[], defaultTrx: number): { trx: number; value: number } | undefined {
+  const hasTrx = args.length >= 2;
+  const trx = hasTrx ? parseNumber(args[0]) : defaultTrx;
+  const value = parseNumber(args[hasTrx ? 1 : 0]);
+  return trx === undefined || value === undefined ? undefined : { trx, value };
+}
+
+function normalizePercent(value: number): number {
+  if (!Number.isFinite(value)) throw new TciError('protocol-error', `Invalid TCI percentage: ${value}`);
+  return Math.round(Math.max(0, Math.min(100, value)));
+}
+
+function writeResult(
+  requested: number,
+  applied: number,
+  acknowledgement: TciWriteResult<number>['acknowledgement'],
+): TciWriteResult<number> {
+  return { requested, applied, outcome: requested === applied ? 'applied' : 'clamped', acknowledgement };
+}
+
 function parseNumberPair(args: string[]): [number, number] | undefined {
   const first = parseNumber(args[0]);
   const second = parseNumber(args[1]);
@@ -877,10 +1087,25 @@ function cloneState(state: TciClientState): TciClientState {
     pttSource: { ...state.pttSource },
     tune: { ...state.tune },
     drive: { ...state.drive },
+    tuneDrive: { ...state.tuneDrive },
     split: { ...state.split },
+    dialectWarnings: [...state.dialectWarnings],
     rxSensors: cloneNested(state.rxSensors),
     txSensors: cloneNested(state.txSensors),
     audio: state.audio ? { ...state.audio } : undefined,
+  };
+}
+
+function cloneHandshake(result: TciHandshakeResult): TciHandshakeResult {
+  return {
+    identity: { ...result.identity, rawProtocolArgs: [...result.identity.rawProtocolArgs] },
+    dialect: {
+      ...result.dialect,
+      evidence: [...result.dialect.evidence],
+      warnings: [...result.dialect.warnings],
+    },
+    ready: true,
+    commandNames: [...result.commandNames],
   };
 }
 

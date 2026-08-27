@@ -1,4 +1,5 @@
 import { TciError } from '../errors.js';
+import type { TciStreamLengthSemantics } from '../dialect/types.js';
 
 export const TCI_STREAM_HEADER_BYTES = 16 * 4;
 
@@ -31,8 +32,18 @@ export interface TciStreamFrame {
   channels: number;
   reserved: number[];
   payload: Buffer;
-  /** Official Stream.length value: number of samples per channel in the payload. */
+  /** Raw Stream.length value from the wire header. */
+  headerSampleCount: number;
+  /** Canonical number of scalar sample values across all channels. */
   sampleCount: number;
+  /** Number of sample frames, each containing `channels` scalar values. */
+  frameCount: number;
+  lengthSemantics: Exclude<TciStreamLengthSemantics, 'auto'>;
+}
+
+export interface ParseStreamFrameOptions {
+  lengthSemantics?: TciStreamLengthSemantics;
+  negotiatedChannels?: number;
 }
 
 export interface BuildStreamFrameOptions {
@@ -45,6 +56,7 @@ export interface BuildStreamFrameOptions {
   samples?: Float32Array | readonly number[];
   /** Explicit Stream.length value, used for header-only frames such as TX_CHRONO. */
   sampleCount?: number;
+  lengthSemantics?: TciStreamLengthSemantics;
   codec?: number;
   crc?: number;
   reserved?: readonly number[];
@@ -54,7 +66,7 @@ export interface BuildTxAudioFrameOptions extends Omit<BuildStreamFrameOptions, 
   receiver?: number;
 }
 
-export function parseStreamFrame(input: Buffer | ArrayBuffer | ArrayBufferView): TciStreamFrame {
+export function parseStreamFrame(input: Buffer | ArrayBuffer | ArrayBufferView, options: ParseStreamFrameOptions = {}): TciStreamFrame {
   const buffer = toBuffer(input);
   if (buffer.byteLength < TCI_STREAM_HEADER_BYTES) {
     throw new TciError('invalid-frame', `TCI stream frame is shorter than ${TCI_STREAM_HEADER_BYTES} bytes`);
@@ -64,15 +76,15 @@ export function parseStreamFrame(input: Buffer | ArrayBuffer | ArrayBufferView):
   const header = Array.from({ length: 16 }, (_, index) => view.getUint32(index * 4, true));
   const sampleType = normalizeSampleType(header[2]);
   const streamType = normalizeStreamType(header[6]);
-  let channels = header[7];
+  let channels = header[7] || options.negotiatedChannels || 0;
   const bytesPerSample = sampleTypeBytes(sampleType);
-  const sampleCount = header[5];
+  const headerSampleCount = header[5];
   const actualPayloadLength = buffer.byteLength - TCI_STREAM_HEADER_BYTES;
   if (channels <= 0) {
     if (streamType === TciStreamType.TX_CHRONO && actualPayloadLength === 0) {
       channels = 1;
     } else {
-      const inferredChannels = sampleCount > 0 ? actualPayloadLength / sampleCount / bytesPerSample : 1;
+      const inferredChannels = headerSampleCount > 0 ? actualPayloadLength / headerSampleCount / bytesPerSample : 1;
       if (!Number.isInteger(inferredChannels) || inferredChannels <= 0) {
         throw new TciError('invalid-frame', `Invalid TCI channel count: ${channels}`);
       }
@@ -85,15 +97,29 @@ export function parseStreamFrame(input: Buffer | ArrayBuffer | ArrayBufferView):
     throw new TciError('invalid-frame', 'TCI payload length is not aligned to sample type and channel count');
   }
 
+  const actualScalarCount = payloadLength / bytesPerSample;
+  const requestedSemantics = options.lengthSemantics ?? 'auto';
+  const lengthSemantics = resolveLengthSemantics(
+    requestedSemantics,
+    streamType,
+    headerSampleCount,
+    actualScalarCount,
+    channels,
+  );
+  const sampleCount = lengthSemantics === 'per-channel' ? headerSampleCount * channels : headerSampleCount;
+
   if (streamType !== TciStreamType.TX_CHRONO) {
-    const expectedPerChannelPayloadLength = sampleCount * bytesPerSample * channels;
-    const expectedScalarPayloadLength = sampleCount * bytesPerSample;
-    if (payloadLength !== expectedPerChannelPayloadLength && payloadLength !== expectedScalarPayloadLength) {
+    const expectedPayloadLength = sampleCount * bytesPerSample;
+    if (payloadLength !== expectedPayloadLength) {
       throw new TciError(
         'invalid-frame',
-        `TCI stream frame length mismatch: header says ${sampleCount} samples (${expectedPerChannelPayloadLength} payload bytes), got ${payloadLength}`,
+        `TCI stream frame length mismatch: header says ${headerSampleCount} samples using ${lengthSemantics} semantics (${expectedPayloadLength} payload bytes), got ${payloadLength}`,
       );
     }
+  }
+
+  if (sampleCount % channels !== 0) {
+    throw new TciError('invalid-frame', `TCI scalar sample count ${sampleCount} is not divisible by ${channels} channels`);
   }
 
   return {
@@ -107,7 +133,10 @@ export function parseStreamFrame(input: Buffer | ArrayBuffer | ArrayBufferView):
     channels,
     reserved: header.slice(8),
     payload: buffer.subarray(TCI_STREAM_HEADER_BYTES),
+    headerSampleCount,
     sampleCount,
+    frameCount: sampleCount / channels,
+    lengthSemantics,
   };
 }
 
@@ -122,11 +151,19 @@ export function buildStreamFrame(options: BuildStreamFrameOptions): Buffer {
   if (payload.byteLength % (bytesPerSample * channels) !== 0) {
     throw new TciError('invalid-frame', 'TCI payload length is not aligned to sample type and channel count');
   }
-  const derivedSampleCount = payload.byteLength / bytesPerSample / channels;
+  const derivedSampleCount = payload.byteLength / bytesPerSample;
   const sampleCount = options.sampleCount ?? derivedSampleCount;
   if (!Number.isInteger(sampleCount) || sampleCount < 0) {
     throw new TciError('invalid-frame', `Invalid TCI sample count: ${sampleCount}`);
   }
+  if (payload.byteLength > 0 && sampleCount !== derivedSampleCount) {
+    throw new TciError('invalid-frame', `Explicit scalar sample count ${sampleCount} does not match payload count ${derivedSampleCount}`);
+  }
+  if (sampleCount % channels !== 0) {
+    throw new TciError('invalid-frame', `TCI scalar sample count ${sampleCount} is not divisible by ${channels} channels`);
+  }
+  const lengthSemantics = options.lengthSemantics === 'per-channel' ? 'per-channel' : 'scalar';
+  const headerSampleCount = lengthSemantics === 'per-channel' ? sampleCount / channels : sampleCount;
 
   const frame = Buffer.alloc(TCI_STREAM_HEADER_BYTES + payload.byteLength);
   const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
@@ -137,7 +174,7 @@ export function buildStreamFrame(options: BuildStreamFrameOptions): Buffer {
     sampleType,
     options.codec ?? 0,
     options.crc ?? 0,
-    sampleCount,
+    headerSampleCount,
     options.streamType,
     channels,
     ...Array.from({ length: 8 }, (_, index) => reserved[index] ?? 0),
@@ -145,6 +182,20 @@ export function buildStreamFrame(options: BuildStreamFrameOptions): Buffer {
   header.forEach((value, index) => view.setUint32(index * 4, value >>> 0, true));
   payload.copy(frame, TCI_STREAM_HEADER_BYTES);
   return frame;
+}
+
+function resolveLengthSemantics(
+  requested: TciStreamLengthSemantics,
+  streamType: TciStreamType,
+  headerSampleCount: number,
+  actualScalarCount: number,
+  channels: number,
+): Exclude<TciStreamLengthSemantics, 'auto'> {
+  if (requested !== 'auto') return requested;
+  if (streamType === TciStreamType.TX_CHRONO && actualScalarCount === 0) return 'scalar';
+  if (actualScalarCount === headerSampleCount) return 'scalar';
+  if (actualScalarCount === headerSampleCount * channels) return 'per-channel';
+  return 'scalar';
 }
 
 export function buildTxAudioFrame(options: BuildTxAudioFrameOptions): Buffer {

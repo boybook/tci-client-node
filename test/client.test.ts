@@ -106,6 +106,66 @@ it('keeps the socket connected when a state-based write confirmation times out',
   await client.disconnect();
 });
 
+it('accepts a Thetis constrained DRIVE state as a clamped write result', async () => {
+  server = new MockTciServer({
+    startupCommands: [
+      'PROTOCOL:ExpertSDR3,2.0;',
+      'DEVICE:ANAN7000DLE;',
+      'TX_PROFILES_EX:Default;',
+      'VFO:0,0,14074000;',
+      'DRIVE:0,30;',
+      'READY;',
+    ],
+  });
+  server.onCommand(({ socket, command }) => {
+    if (command.name === 'drive' && command.args[1] === '100') {
+      socket.send('DRIVE:0,50;');
+      return true;
+    }
+    return false;
+  });
+  await server.start();
+  const client = new TciClient({ url: server.url(), commandTimeoutMs: 100 });
+  const handshake = await client.connect();
+
+  expect(handshake.dialect.dialect.id).toBe('thetis-2.0');
+  await expect(client.setDriveWithResult(100)).resolves.toEqual({
+    requested: 100,
+    applied: 50,
+    outcome: 'clamped',
+    acknowledgement: 'state',
+  });
+  expect(client.getState().drive['0']).toBe(50);
+  await client.disconnect();
+});
+
+it('uses the TCI 1.4 DRIVE shape selected by the handshake', async () => {
+  server = new MockTciServer({
+    startupCommands: ['PROTOCOL:ExpertSDR,1.4;', 'DEVICE:SunSDR;', 'VFO:0,0,7100000;', 'DRIVE:30;', 'READY;'],
+  });
+  server.onCommand(({ socket, command }) => {
+    if (command.name === 'drive') {
+      socket.send(`DRIVE:${command.args[0] ?? '40'};`);
+      return true;
+    }
+    return false;
+  });
+  await server.start();
+  const client = new TciClient({ url: server.url(), commandTimeoutMs: 100 });
+  await client.connect();
+  await client.setDriveWithResult(40);
+  expect(server.receivedCommands.some((command) => command.raw === 'DRIVE:40')).toBe(true);
+  await client.disconnect();
+});
+
+it('rejects a WebSocket that does not provide enough TCI initialization evidence', async () => {
+  server = new MockTciServer({ startupCommands: ['READY;'] });
+  await server.start();
+  const client = new TciClient({ url: server.url(), handshakeTimeoutMs: 100 });
+  client.on('error', () => undefined);
+  await expect(client.connect()).rejects.toMatchObject({ code: 'invalid-handshake' });
+});
+
 it('marks state disconnected and rejects queued commands on server close', async () => {
   server = new MockTciServer({ commandDelayMs: 100 });
   await server.start();
