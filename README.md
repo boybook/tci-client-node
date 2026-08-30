@@ -6,7 +6,7 @@ TCI is a WebSocket protocol: text commands are used for CAT-style radio control,
 
 ## Status
 
-`0.2.x` provides a dialect-aware client for application integrations:
+`0.3.x` provides a dialect-aware client for application integrations:
 
 - Strict WebSocket and READY/startup handshake validation
 - Automatic ExpertSDR 1.4, 1.5-1.8, 1.9-2.0, AetherSDR, and Thetis dialect selection
@@ -14,10 +14,11 @@ TCI is a WebSocket protocol: text commands are used for CAT-style radio control,
 - Frequency, mode, PTT, tune, drive, split, and CW text/macros
 - RX and TX sensor state parsing
 - RX audio, TX audio, TX_CHRONO, and line-out stream frame parsing/building
+- Standard IQ capability discovery, DDS tracking, sample-rate readback, and owned IQ stream sessions
 - Serial command queue with timeout, cancellation, and interleaved broadcast handling
 - Mock TCI server and fake WebSocket transport for integration tests
 
-Panadapter, IQ UI, skimmer, and spots APIs are intentionally out of scope for the first release, but the protocol layer is designed to be extended.
+Panadapter rendering, skimmer DSP, and spots APIs remain application concerns; this package exposes the standard IQ transport without imposing a spectrum implementation.
 
 ## Install
 
@@ -66,6 +67,27 @@ await client.configureAudio({
 await client.startAudio();
 await client.setPtt(true, { source: 'tci' });
 ```
+
+## IQ Streams
+
+```ts
+import { decodeInterleavedIq } from 'tci-client-node';
+
+const capabilities = client.getIqCapabilities();
+if (capabilities.supported) {
+  const iq = await client.openIqStream({ receiver: 0, sampleRate: 96_000 });
+  iq.on('frame', (event) => {
+    const interleaved = decodeInterleavedIq(event.frame);
+    console.log(event.centerFrequency, event.sampleRate, interleaved.length / 2);
+  });
+
+  const applied = await iq.setSampleRate(48_000);
+  console.log(applied.requested, applied.applied);
+  await iq.close();
+}
+```
+
+`openIqStream()` resolves on the first valid IQ frame rather than relying on an `IQ_START` echo, because some compatible servers intentionally do not echo that command. The returned session owns the subscription and sends best-effort `IQ_STOP` when closed.
 
 `connect()` resolves only after a valid `READY;` initialization sequence. A WebSocket that opens but does not provide enough TCI initialization evidence is rejected. Use `dialect: 'thetis-2.0'` or another dialect ID only when an incomplete server cannot be identified automatically.
 
@@ -137,10 +159,8 @@ The package is built with `tsup` and publishes ESM, CommonJS, and declaration fi
 Releases are published by GitHub Actions when a `v*` tag is pushed. The tag must
 match `package.json` exactly, for example `v0.1.0` for version `0.1.0`.
 
-The workflow mirrors the `icom-wlan-node` release shape: install with `npm ci`,
-typecheck, build, test, verify the package contents, and publish to npm using
-the `NPM_TOKEN` repository secret. Provenance is enabled through npm's
-`publishConfig`.
+The workflow installs with `npm ci`, typechecks, builds, tests, verifies package
+contents, and publishes through npm Trusted Publishing (OIDC) with provenance.
 
 ## References
 

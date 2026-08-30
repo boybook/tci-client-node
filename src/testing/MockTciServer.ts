@@ -39,6 +39,7 @@ export class MockTciServer {
   private mode = 'DIGU';
   private ptt = false;
   private drive = 30;
+  private iqSampleRate = 48_000;
 
   constructor(options: MockTciServerOptions = {}) {
     this.options = {
@@ -120,6 +121,21 @@ export class MockTciServer {
     this.broadcastBinary(frame);
   }
 
+  sendIqFrame(options: Partial<BuildStreamFrameOptions> & { samples?: Float32Array | readonly number[] } = {}): void {
+    const samples = options.samples ?? new Float32Array(4096);
+    const frame = buildStreamFrame({
+      receiver: options.receiver ?? 0,
+      sampleRate: options.sampleRate ?? this.iqSampleRate,
+      sampleType: options.sampleType ?? TciSampleType.FLOAT32,
+      streamType: TciStreamType.IQ_STREAM,
+      channels: options.channels ?? 2,
+      samples,
+      payload: options.payload,
+      lengthSemantics: options.lengthSemantics,
+    });
+    this.broadcastBinary(frame);
+  }
+
   sendTxChrono(options: Partial<BuildStreamFrameOptions> & { sampleCount?: number } = {}): void {
     const sampleType = options.sampleType ?? TciSampleType.FLOAT32;
     const channels = options.channels ?? 1;
@@ -152,6 +168,8 @@ export class MockTciServer {
       'DEVICE:Mock ExpertSDR3;',
       'MODULATIONS_LIST:LSB,USB,CW,AM,NFM,DIGU,DIGL;',
       `VFO:0,0,${this.frequency};`,
+      `DDS:0,${this.frequency};`,
+      `IQ_SAMPLERATE:${this.iqSampleRate};`,
       `MODULATION:0,${this.mode};`,
       `TRX:0,${this.ptt};`,
       `DRIVE:0,${this.drive};`,
@@ -233,6 +251,15 @@ export class MockTciServer {
       case 'cw_macros_stop':
       case 'audio_samplerate':
       case 'tx_stream_audio_buffering':
+        socket.send(formatTciCommand(command.originalName, command.args));
+        break;
+      case 'iq_samplerate': {
+        if (command.args[0] !== undefined) this.iqSampleRate = Number(command.args[0]);
+        socket.send(formatTciCommand('IQ_SAMPLERATE', [this.iqSampleRate]));
+        break;
+      }
+      case 'iq_start':
+      case 'iq_stop':
         socket.send(formatTciCommand(command.originalName, command.args));
         break;
       default:

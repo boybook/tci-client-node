@@ -289,6 +289,16 @@ export function payloadToFloat32(frameOrPayload: TciStreamFrame | Buffer | Uint8
   return output;
 }
 
+export function decodeInterleavedIq(frame: TciStreamFrame): Float32Array {
+  if (frame.streamType !== TciStreamType.IQ_STREAM) {
+    throw new TciError('invalid-frame', 'Expected a TCI IQ stream frame');
+  }
+  if (frame.channels !== 2 || frame.sampleCount % 2 !== 0) {
+    throw new TciError('invalid-frame', `TCI IQ frame must contain interleaved I/Q pairs, got ${frame.channels} channels`);
+  }
+  return payloadToFloat32(frame);
+}
+
 export function samplesToPayload(samples: Float32Array | readonly number[], sampleType: TciSampleType | TciSampleTypeName): Buffer {
   const type = normalizeSampleType(sampleType);
   const bytes = sampleTypeBytes(type);

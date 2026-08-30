@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Add standard TCI IQ capability discovery and dialect-specific sample-rate lists.
+- Track IQ sample-rate, receiver lifecycle, and DDS center-frequency state.
+- Add owned IQ stream sessions with first-frame startup acknowledgement and sample-rate readback.
+- Emit typed IQ frames and add interleaved I/Q decoding helpers.
+- Extend the mock TCI server with standard IQ frames and lifecycle commands.
+
 ## 0.2.0
 
 - Add an extensible TCI transport, dialect registry, strict handshake, and protocol identity model.

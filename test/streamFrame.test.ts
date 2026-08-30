@@ -3,6 +3,7 @@ import {
   TCI_STREAM_HEADER_BYTES,
   buildStreamFrame,
   buildTxAudioFrame,
+  decodeInterleavedIq,
   float32ToPcm16,
   mixToMono,
   parseStreamFrame,
@@ -63,6 +64,21 @@ it('parses header-only TX_CHRONO requests', () => {
   expect(frame.sampleCount).toBe(512);
   expect(frame.payloadLength).toBe(0);
   expect(frame.payload.byteLength).toBe(0);
+});
+
+it('decodes interleaved standard IQ samples', () => {
+  const frame = parseStreamFrame(buildStreamFrame({
+    receiver: 0,
+    sampleRate: 96_000,
+    sampleType: 'float32',
+    streamType: TciStreamType.IQ_STREAM,
+    channels: 2,
+    samples: new Float32Array([0.1, -0.1, 0.2, -0.2]),
+  }));
+  expect(frame.frameCount).toBe(2);
+  expect(Array.from(decodeInterleavedIq(frame))).toEqual([
+    expect.closeTo(0.1, 5), expect.closeTo(-0.1, 5), expect.closeTo(0.2, 5), expect.closeTo(-0.2, 5),
+  ]);
 });
 
 it('accepts scalar sample-count payloads from legacy TCI stream builders', () => {

@@ -43,6 +43,8 @@ export interface TciDialect {
   readonly streamLengthSemantics: TciStreamLengthSemantics;
   readonly supportsStreamChannels: boolean;
   readonly supportsTxAudioSource: boolean;
+  readonly supportsIqStream: boolean;
+  readonly iqSampleRates: readonly number[];
   detect(context: TciDialectDetectionContext): TciDialectScore;
   resolve?(context: TciDialectDetectionContext): TciDialect;
   buildDriveSetArgs(trx: number, value: number): readonly unknown[];
