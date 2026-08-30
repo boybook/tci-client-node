@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+- Add owned RX/TX meter stream sessions and progressive capability states.
+- Add dialect adapters for ExpertSDR, Thetis, AetherSDR, and generic observed servers.
+- Parse and coalesce legacy, channel, and extended RX sensor frames.
+- Expose standard TX RMS/peak power and SWR plus AetherSDR's native dBFS ALC extension.
+- Validate malformed meter frames and perform best-effort subscription cleanup.
+- Extend the mock TCI server with typed RX/TX meter helpers.
+
 ## 0.3.0
 
 - Add standard TCI IQ capability discovery and dialect-specific sample-rate lists.

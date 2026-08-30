@@ -15,6 +15,7 @@ TCI is a WebSocket protocol: text commands are used for CAT-style radio control,
 - RX and TX sensor state parsing
 - RX audio, TX audio, TX_CHRONO, and line-out stream frame parsing/building
 - Standard IQ capability discovery, DDS tracking, sample-rate readback, and owned IQ stream sessions
+- Owned RX/TX meter sessions with typed dBm, RMS/peak power, SWR, and dialect extensions
 - Serial command queue with timeout, cancellation, and interleaved broadcast handling
 - Mock TCI server and fake WebSocket transport for integration tests
 
@@ -89,6 +90,28 @@ if (capabilities.supported) {
 
 `openIqStream()` resolves on the first valid IQ frame rather than relying on an `IQ_START` echo, because some compatible servers intentionally do not echo that command. The returned session owns the subscription and sends best-effort `IQ_STOP` when closed.
 
+## Meter Streams
+
+```ts
+const meters = await client.openMeterStream({ receiver: 0, channel: 0, trx: 0, intervalMs: 300 });
+
+meters.on('rxFrame', (frame) => {
+  console.log(frame.levelDbm, frame.averageLevelDbm, frame.peakBinDbm);
+});
+
+meters.on('txFrame', (frame) => {
+  console.log(frame.rmsPowerWatts, frame.peakPowerWatts, frame.swr, frame.alc);
+});
+
+meters.on('capabilitiesChanged', (capabilities) => {
+  console.log(capabilities.rxLevel, capabilities.txRmsPower);
+});
+
+await meters.close();
+```
+
+Meter support progresses from dialect declarations and enable acknowledgements to `observed` only after a valid field arrives. `RX_SENSORS`, `RX_CHANNEL_SENSORS`, and Thetis `RX_CHANNEL_SENSORS_EX` are coalesced into one richest RX frame. AetherSDR's trailing TX ALC field is exposed with its native `dbfs` unit. The session sends best-effort RX/TX disable commands when closed and never waits for a TX frame while the radio is idle.
+
 `connect()` resolves only after a valid `READY;` initialization sequence. A WebSocket that opens but does not provide enough TCI initialization evidence is rejected. Use `dialect: 'thetis-2.0'` or another dialect ID only when an incomplete server cannot be identified automatically.
 
 ## Dialects
@@ -115,6 +138,7 @@ The compatibility `setDrive()` method remains available and treats a clamped val
 - `tci-client-node/audio`: stream frame parser/builder and sample conversion helpers.
 - `tci-client-node/dialect`: dialect interfaces, built-ins, detection, and registry.
 - `tci-client-node/transport`: transport interface and default WebSocket transport.
+- `tci-client-node/meter`: meter adapters, capability types, frames, and session API.
 - `tci-client-node/testing`: `MockTciServer` and `FakeWebSocket` helpers for tests.
 
 ## Audio Frames

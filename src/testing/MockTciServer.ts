@@ -152,6 +152,55 @@ export class MockTciServer {
     this.broadcastBinary(frame);
   }
 
+  sendRxMeterFrame(options: {
+    receiver?: number;
+    channel?: number;
+    levelDbm: number;
+    averageLevelDbm?: number;
+    peakBinDbm?: number;
+    source?: 'legacy' | 'channel' | 'extended';
+  }): void {
+    const receiver = options.receiver ?? 0;
+    const channel = options.channel ?? 0;
+    const source = options.source ?? 'channel';
+    if (source === 'legacy') {
+      this.broadcastCommand('RX_SENSORS', [receiver, options.levelDbm]);
+      return;
+    }
+    if (source === 'extended') {
+      this.broadcastCommand('RX_CHANNEL_SENSORS_EX', [
+        receiver,
+        channel,
+        options.levelDbm,
+        options.averageLevelDbm ?? options.levelDbm,
+        options.peakBinDbm ?? options.levelDbm,
+      ]);
+      return;
+    }
+    this.broadcastCommand('RX_CHANNEL_SENSORS', [receiver, channel, options.levelDbm]);
+  }
+
+  sendTxMeterFrame(options: {
+    trx?: number;
+    micLevelDbm?: number;
+    rmsPowerWatts?: number;
+    peakPowerWatts?: number;
+    swr?: number;
+    alc?: number;
+    extraArgs?: readonly unknown[];
+  } = {}): void {
+    const args: unknown[] = [
+      options.trx ?? 0,
+      options.micLevelDbm ?? -20,
+      options.rmsPowerWatts ?? 0,
+      options.peakPowerWatts ?? options.rmsPowerWatts ?? 0,
+      options.swr ?? 1,
+    ];
+    if (options.alc !== undefined) args.push(options.alc);
+    if (options.extraArgs) args.push(...options.extraArgs);
+    this.broadcastCommand('TX_SENSORS', args);
+  }
+
   closeClients(): void {
     for (const socket of this.sockets) {
       socket.close();
