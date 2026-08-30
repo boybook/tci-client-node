@@ -35,6 +35,14 @@ import {
   type TciTransport,
   type TciTransportFactory,
 } from '../transport/index.js';
+import {
+  TciMeterStreamSession,
+  UNKNOWN_TCI_METER_CAPABILITIES,
+  cloneMeterCapabilities,
+  createUnknownTciMeterAdapter,
+  type TciMeterCapabilities,
+  type TciMeterStreamOptions,
+} from '../meter/index.js';
 
 export interface TciClientOptions {
   url: string;
@@ -296,6 +304,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     timer: NodeJS.Timeout;
   };
   private activeIqSession?: TciIqStreamSession;
+  private activeMeterSession?: TciMeterStreamSession;
 
   constructor(options: TciClientOptions) {
     super();
@@ -365,6 +374,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   async disconnect(code = 1000, reason = 'client disconnect'): Promise<void> {
+    await this.activeMeterSession?.close().catch(() => undefined);
     const transport = this.transport;
     if (!transport) return;
     await transport.disconnect(code, reason);
@@ -390,6 +400,76 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       currentSampleRate: this.state.iq.sampleRate,
       supportedSampleRates: [...dialect.iqSampleRates],
     };
+  }
+
+  getMeterCapabilities(): TciMeterCapabilities {
+    if (this.activeMeterSession) return this.activeMeterSession.getCapabilities();
+    const adapter = this.activeDialect?.meterAdapter;
+    return adapter
+      ? cloneMeterCapabilities(adapter.declaredCapabilities)
+      : cloneMeterCapabilities(UNKNOWN_TCI_METER_CAPABILITIES);
+  }
+
+  async openMeterStream(options: TciMeterStreamOptions = {}): Promise<TciMeterStreamSession> {
+    if (this.activeMeterSession) throw new TciError('protocol-error', 'This TCI client already has an active meter stream session');
+    this.requireDialect();
+    const receiver = normalizeNonNegativeInteger(options.receiver ?? this.options.receiver, 'meter receiver');
+    const channel = normalizeNonNegativeInteger(options.channel ?? this.options.vfo, 'meter channel');
+    const trx = normalizeNonNegativeInteger(options.trx ?? this.options.trx, 'meter transmitter');
+    const rxEnabled = options.rx ?? true;
+    const txEnabled = options.tx ?? true;
+    if (!rxEnabled && !txEnabled) throw new TciError('protocol-error', 'TCI meter stream must enable RX, TX, or both');
+    const requestedIntervalMs = Math.round(options.intervalMs ?? 300);
+    if (!Number.isFinite(requestedIntervalMs) || requestedIntervalMs <= 0) {
+      throw new TciError('protocol-error', `Invalid TCI meter interval: ${options.intervalMs}`);
+    }
+
+    const adapter = this.activeDialect?.meterAdapter ?? createUnknownTciMeterAdapter();
+    const interval = adapter.normalizeInterval(requestedIntervalMs);
+    let session!: TciMeterStreamSession;
+    session = new TciMeterStreamSession({
+      receiver,
+      channel,
+      trx,
+      requestedIntervalMs: interval.requestedMs,
+      appliedIntervalMs: interval.appliedMs,
+      rxEnabled,
+      txEnabled,
+      adapter,
+      callbacks: {
+        close: async () => {
+          try {
+            if (this.isConnected()) {
+              if (rxEnabled) {
+                const command = adapter.buildEnableCommand('rx', false, interval.appliedMs ?? interval.requestedMs);
+                await this.sendCommand(command.name, command.args, { waitForReply: false }).catch(() => undefined);
+              }
+              if (txEnabled) {
+                const command = adapter.buildEnableCommand('tx', false, interval.appliedMs ?? interval.requestedMs);
+                await this.sendCommand(command.name, command.args, { waitForReply: false }).catch(() => undefined);
+              }
+            }
+          } finally {
+            if (this.activeMeterSession === session) this.activeMeterSession = undefined;
+          }
+        },
+      },
+    });
+    this.activeMeterSession = session;
+    try {
+      if (rxEnabled) {
+        const command = adapter.buildEnableCommand('rx', true, interval.appliedMs ?? interval.requestedMs);
+        await this.sendCommand(command.name, command.args, { waitForReply: false });
+      }
+      if (txEnabled) {
+        const command = adapter.buildEnableCommand('tx', true, interval.appliedMs ?? interval.requestedMs);
+        await this.sendCommand(command.name, command.args, { waitForReply: false });
+      }
+      return session;
+    } catch (error) {
+      await session.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async setIqSampleRate(sampleRate: number, timeoutMs = this.options.commandTimeoutMs): Promise<IqSampleRateResult> {
@@ -980,11 +1060,13 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   private handleText(raw: string): void {
     try {
       const commands = parseTciText(raw);
+      const receivedAtMs = Date.now();
       this.emit('tci:rx', raw, commands);
       for (const command of commands) {
         if (!this.handshakeResult) this.initializationCommands.push(command);
         this.queue.handleCommand(command);
         this.applyCommand(command);
+        this.activeMeterSession?._acceptCommand(command, receivedAtMs);
         this.emit('command', command);
       }
     } catch (error) {
@@ -1094,6 +1176,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     reducers.set('tune_drive', (args) => this.applyTuneDrive(args));
     reducers.set('split_enable', (args) => this.applyBooleanByFirstArg(this.state.split, args));
     reducers.set('rx_channel_sensors', (args) => this.applyRxChannelSensors(args));
+    reducers.set('rx_channel_sensors_ex', (args) => this.applyRxChannelSensors(args));
     reducers.set('rx_sensors', (args) => this.applyRxSensors(args));
     reducers.set('tx_sensors', (args) => this.applyTxSensors(args));
     reducers.set('audio_samplerate', (args) => this.updateAudioState({ sampleRate: parseNumber(args[0]) }));
@@ -1228,6 +1311,8 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     this.rejectHandshake(new TciError('disconnected', 'TCI connection closed during handshake', reason));
     this.activeIqSession?._fail(new TciError('disconnected', 'TCI connection closed while IQ stream was active', reason));
     this.activeIqSession = undefined;
+    this.activeMeterSession?._fail(new TciError('disconnected', 'TCI connection closed while meter stream was active', reason));
+    this.activeMeterSession = undefined;
     if (wasConnected) {
       this.emit('disconnected', reason);
       this.emitState();
@@ -1258,6 +1343,13 @@ function parseNumber(value: string | undefined): number | undefined {
   }
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function normalizeNonNegativeInteger(value: number, description: string): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new TciError('protocol-error', `Invalid TCI ${description}: ${value}`);
+  }
+  return value;
 }
 
 function parseBoolean(value: string | undefined): boolean | undefined {

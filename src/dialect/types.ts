@@ -1,4 +1,5 @@
 import type { TciCommand } from '../protocol/text.js';
+import type { TciMeterAdapter } from '../meter/index.js';
 
 export type BuiltInTciDialectId =
   | 'expertsdr-1.4'
@@ -45,6 +46,7 @@ export interface TciDialect {
   readonly supportsTxAudioSource: boolean;
   readonly supportsIqStream: boolean;
   readonly iqSampleRates: readonly number[];
+  readonly meterAdapter?: TciMeterAdapter;
   detect(context: TciDialectDetectionContext): TciDialectScore;
   resolve?(context: TciDialectDetectionContext): TciDialect;
   buildDriveSetArgs(trx: number, value: number): readonly unknown[];

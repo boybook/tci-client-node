@@ -1,6 +1,6 @@
 {
   "name": "tci-client-node",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pure TypeScript TCI (Transceiver Control Interface) client for SunSDR/ExpertSDR.",
   "type": "module",
   "license": "MIT",
@@ -24,7 +24,8 @@
     "hamradio",
     "cat",
     "websocket",
-    "audio"
+    "audio",
+    "meter"
   ],
   "files": [
     "dist",
@@ -42,6 +43,9 @@
       ],
       "audio": [
         "./dist/audio/index.d.ts"
+      ],
+      "meter": [
+        "./dist/meter/index.d.ts"
       ],
       "testing": [
         "./dist/testing/index.d.ts"
@@ -76,6 +80,11 @@
       "types": "./dist/transport/index.d.ts",
       "import": "./dist/transport/index.js",
       "require": "./dist/transport/index.cjs"
+    },
+    "./meter": {
+      "types": "./dist/meter/index.d.ts",
+      "import": "./dist/meter/index.js",
+      "require": "./dist/meter/index.cjs"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",

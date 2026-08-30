@@ -5,6 +5,7 @@ import type {
   TciDriveState,
   TciStreamLengthSemantics,
 } from './types.js';
+import { StandardTciMeterAdapter, createUnknownTciMeterAdapter } from '../meter/index.js';
 
 type VersionTuple = readonly number[];
 
@@ -17,6 +18,7 @@ interface StandardDialectOptions {
   supportsIqStream: boolean;
   iqSampleRates: readonly number[];
   driveHasTrx: boolean;
+  meterAdapter?: TciDialect['meterAdapter'];
   detect: (context: TciDialectDetectionContext) => TciDialectScore;
   resolve?: (context: TciDialectDetectionContext) => TciDialect;
 }
@@ -29,6 +31,7 @@ class StandardTciDialect implements TciDialect {
   readonly supportsTxAudioSource: boolean;
   readonly supportsIqStream: boolean;
   readonly iqSampleRates: readonly number[];
+  readonly meterAdapter?: TciDialect['meterAdapter'];
   private readonly driveHasTrx: boolean;
   private readonly detector: StandardDialectOptions['detect'];
   private readonly resolver?: StandardDialectOptions['resolve'];
@@ -41,6 +44,7 @@ class StandardTciDialect implements TciDialect {
     this.supportsTxAudioSource = options.supportsTxAudioSource;
     this.supportsIqStream = options.supportsIqStream;
     this.iqSampleRates = [...options.iqSampleRates];
+    this.meterAdapter = options.meterAdapter;
     this.driveHasTrx = options.driveHasTrx;
     this.detector = options.detect;
     this.resolver = options.resolve;
@@ -98,6 +102,7 @@ export const expertSdr14Dialect: TciDialect = new StandardTciDialect({
   id: 'expertsdr-1.4', label: 'ExpertSDR / TCI 1.4', streamLengthSemantics: 'per-channel',
   supportsStreamChannels: false, supportsTxAudioSource: false, supportsIqStream: true,
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: false,
+  meterAdapter: new StandardTciMeterAdapter({ interval: { reportsApplied: false } }),
   detect: (context) => {
     const parsed = version(context);
     if (!parsed || compareTciVersion(parsed, [1, 4]) > 0) return { score: 0, evidence: [] };
@@ -109,6 +114,7 @@ export const expertSdrLegacyDialect: TciDialect = new StandardTciDialect({
   id: 'expertsdr-1.5-1.8', label: 'ExpertSDR / TCI 1.5-1.8', streamLengthSemantics: 'per-channel',
   supportsStreamChannels: false, supportsTxAudioSource: false, supportsIqStream: true,
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: true,
+  meterAdapter: new StandardTciMeterAdapter({ interval: { reportsApplied: false } }),
   detect: (context) => {
     const parsed = version(context);
     if (!parsed || compareTciVersion(parsed, [1, 5]) < 0 || compareTciVersion(parsed, [1, 9]) >= 0) return { score: 0, evidence: [] };
@@ -120,6 +126,7 @@ export const expertSdrModernDialect: TciDialect = new StandardTciDialect({
   id: 'expertsdr-1.9-2.0', label: 'ExpertSDR / TCI 1.9-2.0', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: true,
+  meterAdapter: new StandardTciMeterAdapter({ interval: { reportsApplied: false } }),
   detect: (context) => {
     const parsed = version(context);
     if (!parsed || compareTciVersion(parsed, [1, 9]) < 0) return { score: 0, evidence: [] };
@@ -136,6 +143,10 @@ export const thetisDialect: TciDialect = new StandardTciDialect({
   id: 'thetis-2.0', label: 'Thetis / TCI 2.0', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: true,
+  meterAdapter: new StandardTciMeterAdapter({
+    interval: { minMs: 30, maxMs: 1_000 },
+    supportsRxExtended: true,
+  }),
   detect: (context) => {
     const evidence: string[] = [];
     let score = 0;
@@ -155,6 +166,10 @@ export const aetherSdrDialect: TciDialect = new StandardTciDialect({
   id: 'aethersdr-1.5', label: 'AetherSDR / TCI 1.5 hybrid', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
   iqSampleRates: [24_000, 48_000, 96_000, 192_000], driveHasTrx: true,
+  meterAdapter: new StandardTciMeterAdapter({
+    interval: { fixedMs: 200 },
+    txAlcUnit: 'dbfs',
+  }),
   detect: (context) => {
     if (!/^aethersdr$/i.test(context.identity.device ?? '')) return { score: 0, evidence: [] };
     const evidence = [`AetherSDR device identity: ${context.identity.device}`];
@@ -175,6 +190,7 @@ export const genericObservedDialect: TciDialect = new StandardTciDialect({
   id: 'generic-observed', label: 'Generic observed TCI', streamLengthSemantics: 'auto',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: false,
   iqSampleRates: [], driveHasTrx: true,
+  meterAdapter: createUnknownTciMeterAdapter(),
   detect: (context) => ({
     score: context.commandNames.has('ready') ? 10 : 0,
     evidence: ['No vendor-specific match; using observed command shapes'],
@@ -192,6 +208,7 @@ export const genericObservedDialect: TciDialect = new StandardTciDialect({
       supportsIqStream: context.commandNames.has('iq_samplerate'),
       iqSampleRates: context.commandNames.has('iq_samplerate') ? [48_000] : [],
       driveHasTrx,
+      meterAdapter: createUnknownTciMeterAdapter(),
       detect: genericObservedDialect.detect.bind(genericObservedDialect),
     });
   },
