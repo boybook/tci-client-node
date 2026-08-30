@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { TciClient, TciStreamType, payloadToFloat32, type TciClientEvents } from '../src/index.js';
+import { TciClient, TciStreamType, decodeInterleavedIq, payloadToFloat32, type TciClientEvents } from '../src/index.js';
 import { MockTciServer } from '../src/testing/index.js';
 
 let server: MockTciServer | undefined;
@@ -185,6 +185,85 @@ it('parses AetherSDR 1.5 audio with modern scalar stream semantics', async () =>
   const [frame] = await received;
   expect(client.getHandshakeResult()?.dialect.dialect.id).toBe('aethersdr-1.5');
   expect(frame).toMatchObject({ headerSampleCount: 4, sampleCount: 4, frameCount: 2, lengthSemantics: 'scalar' });
+  await client.disconnect();
+});
+
+it('opens a standard IQ session with DDS metadata and closes it cleanly', async () => {
+  server = new MockTciServer();
+  server.onCommand(({ server: mock, command }) => {
+    if (command.name === 'iq_start') {
+      queueMicrotask(() => mock.sendIqFrame({
+        sampleRate: 96_000,
+        samples: new Float32Array([0.1, -0.1, 0.2, -0.2]),
+      }));
+    }
+    return false;
+  });
+  await server.start();
+  const client = new TciClient({ url: server.url(), commandTimeoutMs: 200 });
+  await client.connect();
+
+  expect(client.getIqCapabilities()).toEqual({
+    supported: true,
+    currentSampleRate: 48_000,
+    supportedSampleRates: [48_000, 96_000, 192_000, 384_000],
+  });
+  const session = await client.openIqStream({ receiver: 0, sampleRate: 96_000, firstFrameTimeoutMs: 200 });
+  expect(session.appliedSampleRate).toBe(96_000);
+  const nextFrame = onceClientEvent(client, 'iqFrame');
+  server.sendIqFrame({ sampleRate: 96_000, samples: new Float32Array([0.3, -0.3]) });
+  const [iq] = await nextFrame;
+  expect(iq).toMatchObject({ receiver: 0, sampleRate: 96_000, centerFrequency: 14_074_000, complexSampleCount: 1 });
+  expect(Array.from(decodeInterleavedIq(iq.frame))).toEqual([expect.closeTo(0.3, 5), expect.closeTo(-0.3, 5)]);
+
+  await session.close();
+  await waitFor(() => server!.receivedCommands.some((command) => command.raw === 'IQ_STOP:0'));
+  expect(client.getState().iq.activeReceivers['0']).toBe(false);
+  await client.disconnect();
+});
+
+it('uses the first IQ frame as startup acknowledgement when Aether does not echo IQ_START', async () => {
+  server = new MockTciServer({
+    startupCommands: [
+      'PROTOCOL:ExpertSDR3,1.5;',
+      'DEVICE:AetherSDR;',
+      'DDS:0,14100000;',
+      'IQ_SAMPLERATE:48000;',
+      'READY;',
+    ],
+  });
+  server.onCommand(({ socket, server: mock, command }) => {
+    if (command.name === 'iq_samplerate') {
+      socket.send('IQ_SAMPLERATE:48000;');
+      return true;
+    }
+    if (command.name === 'iq_start') {
+      queueMicrotask(() => mock.sendIqFrame({ sampleRate: 48_000, samples: new Float32Array([0.1, 0.2]) }));
+      return true;
+    }
+    if (command.name === 'iq_stop') return true;
+    return false;
+  });
+  await server.start();
+  const client = new TciClient({ url: server.url(), commandTimeoutMs: 200 });
+  await client.connect();
+  const session = await client.openIqStream({ sampleRate: 96_000, firstFrameTimeoutMs: 200 });
+  expect(session.appliedSampleRate).toBe(48_000);
+  expect(client.getIqCapabilities().supportedSampleRates).toEqual([24_000, 48_000, 96_000, 192_000]);
+  await expect(client.openIqStream()).rejects.toMatchObject({ code: 'protocol-error' });
+  await session.close();
+  await client.disconnect();
+});
+
+it('reports IQ unsupported for an observed dialect without IQ initialization evidence', async () => {
+  server = new MockTciServer({
+    startupCommands: ['PROTOCOL:Other,3.0;', 'DEVICE:Unknown;', 'VFO:0,0,7074000;', 'READY;'],
+  });
+  await server.start();
+  const client = new TciClient({ url: server.url(), dialect: 'generic-observed' });
+  await client.connect();
+  expect(client.getIqCapabilities()).toEqual({ supported: false, currentSampleRate: undefined, supportedSampleRates: [] });
+  await expect(client.openIqStream()).rejects.toMatchObject({ code: 'protocol-error' });
   await client.disconnect();
 });
 

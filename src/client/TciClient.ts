@@ -88,6 +88,122 @@ export interface TciTxChronoRequest {
   frameCount: number;
 }
 
+export interface TciIqCapabilities {
+  supported: boolean;
+  currentSampleRate?: number;
+  supportedSampleRates: readonly number[];
+}
+
+export interface TciIqFrame {
+  frame: TciStreamFrame;
+  receiver: number;
+  sampleRate: number;
+  centerFrequency?: number;
+  complexSampleCount: number;
+}
+
+export interface TciIqStreamOptions {
+  receiver?: number;
+  sampleRate?: number;
+  firstFrameTimeoutMs?: number;
+}
+
+export interface IqSampleRateResult extends TciWriteResult<number> {}
+
+export interface TciIqStreamEvents {
+  frame: (frame: TciIqFrame) => void;
+  error: (error: TciError) => void;
+  closed: () => void;
+}
+
+interface TciIqStreamCallbacks {
+  setSampleRate: (sampleRate: number) => Promise<IqSampleRateResult>;
+  close: () => Promise<void>;
+}
+
+export class TciIqStreamSession extends EventEmitter<TciIqStreamEvents> {
+  readonly receiver: number;
+  private _appliedSampleRate: number;
+  private readonly callbacks: TciIqStreamCallbacks;
+  private closed = false;
+  private firstFrame?: {
+    promise: Promise<TciIqFrame>;
+    resolve: (frame: TciIqFrame) => void;
+    reject: (error: TciError) => void;
+    timer: NodeJS.Timeout;
+  };
+
+  constructor(receiver: number, appliedSampleRate: number, callbacks: TciIqStreamCallbacks) {
+    super();
+    this.receiver = receiver;
+    this._appliedSampleRate = appliedSampleRate;
+    this.callbacks = callbacks;
+  }
+
+  get appliedSampleRate(): number { return this._appliedSampleRate; }
+
+  async setSampleRate(sampleRate: number): Promise<IqSampleRateResult> {
+    if (this.closed) throw new TciError('cancelled', 'TCI IQ stream is closed');
+    const result = await this.callbacks.setSampleRate(sampleRate);
+    this._appliedSampleRate = result.applied;
+    return result;
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.rejectFirstFrame(new TciError('cancelled', 'TCI IQ stream closed before its first frame'));
+    try {
+      await this.callbacks.close();
+    } finally {
+      this.emit('closed');
+      this.removeAllListeners();
+    }
+  }
+
+  waitForFirstFrame(timeoutMs: number): Promise<TciIqFrame> {
+    if (this.firstFrame) return this.firstFrame.promise;
+    let resolvePromise!: (frame: TciIqFrame) => void;
+    let rejectPromise!: (error: TciError) => void;
+    const promise = new Promise<TciIqFrame>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    const timer = setTimeout(() => {
+      this.firstFrame = undefined;
+      rejectPromise(new TciError('command-timeout', `Timed out waiting for TCI IQ frame for receiver ${this.receiver}`));
+    }, timeoutMs);
+    this.firstFrame = { promise, resolve: resolvePromise, reject: rejectPromise, timer };
+    return promise;
+  }
+
+  _acceptFrame(frame: TciIqFrame): void {
+    if (this.closed || frame.receiver !== this.receiver) return;
+    this._appliedSampleRate = frame.sampleRate;
+    const firstFrame = this.firstFrame;
+    if (firstFrame) {
+      clearTimeout(firstFrame.timer);
+      this.firstFrame = undefined;
+      firstFrame.resolve(frame);
+    }
+    this.emit('frame', frame);
+  }
+
+  _fail(error: TciError): void {
+    if (this.closed) return;
+    this.rejectFirstFrame(error);
+    this.emit('error', error);
+  }
+
+  private rejectFirstFrame(error: TciError): void {
+    const firstFrame = this.firstFrame;
+    if (!firstFrame) return;
+    clearTimeout(firstFrame.timer);
+    this.firstFrame = undefined;
+    firstFrame.reject(error);
+  }
+}
+
 export interface TciClientState {
   connected: boolean;
   ready: boolean;
@@ -118,6 +234,11 @@ export interface TciClientState {
     txBufferingMs?: number;
     running: boolean;
   };
+  iq: {
+    sampleRate?: number;
+    activeReceivers: Record<string, boolean>;
+  };
+  dds: Record<string, number>;
 }
 
 export interface TciClientEvents {
@@ -132,6 +253,7 @@ export interface TciClientEvents {
   'tci:rx': (raw: string, commands: TciCommand[]) => void;
   'tci:binary': (frame: TciStreamFrame) => void;
   rxAudioFrame: (frame: TciStreamFrame) => void;
+  iqFrame: (frame: TciIqFrame) => void;
   lineoutAudioFrame: (frame: TciStreamFrame) => void;
   txChrono: (request: TciTxChronoRequest) => void;
   error: (error: TciError) => void;
@@ -173,6 +295,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     reject: (error: TciError) => void;
     timer: NodeJS.Timeout;
   };
+  private activeIqSession?: TciIqStreamSession;
 
   constructor(options: TciClientOptions) {
     super();
@@ -214,6 +337,8 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       dialectWarnings: [],
       rxSensors: {},
       txSensors: {},
+      iq: { activeReceivers: {} },
+      dds: {},
     };
     this.stateReducers = this.createStateReducers();
   }
@@ -256,6 +381,71 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
   getHandshakeResult(): TciHandshakeResult | undefined {
     return this.handshakeResult ? cloneHandshake(this.handshakeResult) : undefined;
+  }
+
+  getIqCapabilities(): TciIqCapabilities {
+    const dialect = this.requireDialect();
+    return {
+      supported: dialect.supportsIqStream,
+      currentSampleRate: this.state.iq.sampleRate,
+      supportedSampleRates: [...dialect.iqSampleRates],
+    };
+  }
+
+  async setIqSampleRate(sampleRate: number, timeoutMs = this.options.commandTimeoutMs): Promise<IqSampleRateResult> {
+    const capabilities = this.getIqCapabilities();
+    const requested = Math.round(sampleRate);
+    if (!capabilities.supported) throw new TciError('protocol-error', `TCI dialect ${this.requireDialect().id} does not support IQ streaming`);
+    if (!Number.isFinite(requested) || requested <= 0) throw new TciError('protocol-error', `Invalid TCI IQ sample rate: ${sampleRate}`);
+    if (capabilities.supportedSampleRates.length > 0 && !capabilities.supportedSampleRates.includes(requested)) {
+      throw new TciError('protocol-error', `TCI IQ sample rate ${requested} is not supported by dialect ${this.requireDialect().id}`);
+    }
+    if (this.state.iq.sampleRate === requested) return writeResult(requested, requested, 'state');
+    const waiter = this.waitForCommand((command) => command.name === 'iq_samplerate', timeoutMs, 'IQ_SAMPLERATE readback');
+    try {
+      await this.sendCommand('IQ_SAMPLERATE', [requested], { waitForReply: false });
+      const reply = await waiter.promise;
+      const applied = parseNumber(reply.args[0]);
+      if (applied === undefined || applied <= 0) throw new TciError('protocol-error', `Invalid IQ_SAMPLERATE readback: ${reply.raw}`);
+      return writeResult(requested, applied, 'reply');
+    } finally {
+      waiter.cancel();
+    }
+  }
+
+  async openIqStream(options: TciIqStreamOptions = {}): Promise<TciIqStreamSession> {
+    if (this.activeIqSession) throw new TciError('protocol-error', 'This TCI client already has an active IQ stream session');
+    const capabilities = this.getIqCapabilities();
+    if (!capabilities.supported) throw new TciError('protocol-error', `TCI dialect ${this.requireDialect().id} does not support IQ streaming`);
+    const receiver = Math.floor(options.receiver ?? this.options.receiver);
+    if (!Number.isInteger(receiver) || receiver < 0) throw new TciError('protocol-error', `Invalid TCI IQ receiver: ${receiver}`);
+    const requestedRate = options.sampleRate ?? capabilities.currentSampleRate ?? capabilities.supportedSampleRates[0] ?? 48_000;
+    const rateResult = await this.setIqSampleRate(requestedRate);
+    let session!: TciIqStreamSession;
+    session = new TciIqStreamSession(receiver, rateResult.applied, {
+      setSampleRate: (rate) => this.setIqSampleRate(rate),
+      close: async () => {
+        try {
+          if (this.isConnected()) await this.sendCommand('IQ_STOP', [receiver], { waitForReply: false });
+        } finally {
+          this.state.iq.activeReceivers[String(receiver)] = false;
+          if (this.activeIqSession === session) this.activeIqSession = undefined;
+          this.emitState();
+        }
+      },
+    });
+    this.activeIqSession = session;
+    const firstFrame = session.waitForFirstFrame(options.firstFrameTimeoutMs ?? 5_000);
+    try {
+      await this.sendCommand('IQ_START', [receiver], { waitForReply: false });
+      this.state.iq.activeReceivers[String(receiver)] = true;
+      this.emitState();
+      await firstFrame;
+      return session;
+    } catch (error) {
+      await session.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async sendCommand(name: string, args: readonly unknown[] = [], options: SendCommandOptions = {}): Promise<TciCommand | undefined> {
@@ -810,6 +1000,22 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     this.emit('tci:binary', frame);
     this.emit('binary', frame);
     switch (frame.streamType) {
+      case TciStreamType.IQ_STREAM: {
+        if (frame.channels !== 2 || frame.sampleCount % 2 !== 0) {
+          throw new TciError('invalid-frame', 'TCI IQ stream frame must contain interleaved I/Q pairs');
+        }
+        this.state.iq.sampleRate = frame.sampleRate;
+        const iqFrame: TciIqFrame = {
+          frame,
+          receiver: frame.receiver,
+          sampleRate: frame.sampleRate,
+          centerFrequency: this.state.dds[String(frame.receiver)],
+          complexSampleCount: frame.frameCount,
+        };
+        this.emit('iqFrame', iqFrame);
+        this.activeIqSession?._acceptFrame(iqFrame);
+        break;
+      }
       case TciStreamType.RX_AUDIO_STREAM:
         this.emit('rxAudioFrame', frame);
         break;
@@ -876,6 +1082,11 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     reducers.set('if_limits', (args) => { this.state.ifLimits = parseNumberPair(args); });
     reducers.set('modulations_list', (args) => { this.state.modulations = args.map((mode) => mode.toLowerCase()); });
     reducers.set('vfo', (args) => this.applyVfo(args));
+    reducers.set('dds', (args) => {
+      const receiver = parseNumber(args[0]);
+      const frequency = parseNumber(args[1]);
+      if (receiver !== undefined && frequency !== undefined && frequency >= 0) this.state.dds[String(receiver)] = frequency;
+    });
     reducers.set('modulation', (args) => this.applyModulation(args));
     reducers.set('trx', (args) => this.applyTrx(args));
     reducers.set('tune', (args) => this.applyBooleanByFirstArg(this.state.tune, args));
@@ -892,6 +1103,9 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     reducers.set('tx_stream_audio_buffering', (args) => this.updateAudioState({ txBufferingMs: parseNumber(args[0]) }));
     reducers.set('audio_start', () => this.updateAudioState({ running: true }));
     reducers.set('audio_stop', () => this.updateAudioState({ running: false }));
+    reducers.set('iq_samplerate', (args) => { this.state.iq.sampleRate = parseNumber(args[0]); });
+    reducers.set('iq_start', (args) => { this.state.iq.activeReceivers[String(args[0] ?? this.options.receiver)] = true; });
+    reducers.set('iq_stop', (args) => { this.state.iq.activeReceivers[String(args[0] ?? this.options.receiver)] = false; });
     return reducers;
   }
 
@@ -1012,6 +1226,8 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     this.state.ready = false;
     this.queue.setConnected(false);
     this.rejectHandshake(new TciError('disconnected', 'TCI connection closed during handshake', reason));
+    this.activeIqSession?._fail(new TciError('disconnected', 'TCI connection closed while IQ stream was active', reason));
+    this.activeIqSession = undefined;
     if (wasConnected) {
       this.emit('disconnected', reason);
       this.emitState();
@@ -1105,6 +1321,8 @@ function cloneState(state: TciClientState): TciClientState {
     rxSensors: cloneNested(state.rxSensors),
     txSensors: cloneNested(state.txSensors),
     audio: state.audio ? { ...state.audio } : undefined,
+    iq: { ...state.iq, activeReceivers: { ...state.iq.activeReceivers } },
+    dds: { ...state.dds },
   };
 }
 
