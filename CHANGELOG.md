@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+- Add a reusable TCI TX audio sync helper with queueing, chrono servicing, drain waiters, and timing hints.
+- Preserve zero-padding semantics while exposing TX pacing diagnostics for low-latency callers.
+- Extend audio exports for service-loop driven TX pacing without adding workers.
+
 ## 0.4.0
 
 - Add owned RX/TX meter stream sessions and progressive capability states.
