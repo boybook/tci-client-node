@@ -43,6 +43,22 @@ it('runs connect -> startup -> command ack -> audio -> tx chrono -> tx audio', a
   await client.disconnect();
 });
 
+it('reads and writes RX_FILTER_BAND passband offsets', async () => {
+  server = new MockTciServer();
+  await server.start();
+  const client = new TciClient({ url: server.url(), commandTimeoutMs: 200 });
+  await client.connect();
+
+  await expect(client.getRxFilterBand()).resolves.toEqual([30, 2700]);
+  expect(client.getState().rxFilterBands['0']).toEqual([30, 2700]);
+
+  await client.setRxFilterBand(0, 3200);
+  expect(client.getState().rxFilterBands['0']).toEqual([0, 3200]);
+  expect(server.receivedCommands.some((command) => command.raw === 'RX_FILTER_BAND:0,0,3200')).toBe(true);
+
+  await client.disconnect();
+});
+
 it('resolves setFrequency only on the final matching state after band-change noise', async () => {
   server = new MockTciServer();
   server.onCommand(({ socket, command }) => {

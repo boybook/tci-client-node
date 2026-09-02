@@ -40,6 +40,7 @@ export class MockTciServer {
   private ptt = false;
   private drive = 30;
   private iqSampleRate = 48_000;
+  private rxFilterBand: [number, number] = [30, 2700];
 
   constructor(options: MockTciServerOptions = {}) {
     this.options = {
@@ -220,6 +221,7 @@ export class MockTciServer {
       `DDS:0,${this.frequency};`,
       `IQ_SAMPLERATE:${this.iqSampleRate};`,
       `MODULATION:0,${this.mode};`,
+      `RX_FILTER_BAND:0,${this.rxFilterBand[0]},${this.rxFilterBand[1]};`,
       `TRX:0,${this.ptt};`,
       `DRIVE:0,${this.drive};`,
       'READY;',
@@ -305,6 +307,13 @@ export class MockTciServer {
       case 'iq_samplerate': {
         if (command.args[0] !== undefined) this.iqSampleRate = Number(command.args[0]);
         socket.send(formatTciCommand('IQ_SAMPLERATE', [this.iqSampleRate]));
+        break;
+      }
+      case 'rx_filter_band': {
+        if (command.args.length >= 3) {
+          this.rxFilterBand = [Number(command.args[1]), Number(command.args[2])];
+        }
+        socket.send(formatTciCommand('RX_FILTER_BAND', [command.args[0] ?? '0', ...this.rxFilterBand]));
         break;
       }
       case 'iq_start':

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Add typed RX filter-band state tracking and `getRxFilterBand` / `setRxFilterBand` helpers for the standard `RX_FILTER_BAND` command.
+- Extend the mock TCI server and client tests with RX filter-band read/write coverage.
+
 ## 0.5.0
 
 - Add a reusable TCI TX audio sync helper with queueing, chrono servicing, drain waiters, and timing hints.

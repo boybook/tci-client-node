@@ -69,6 +69,19 @@ await client.startAudio();
 await client.setPtt(true, { source: 'tci' });
 ```
 
+## RX Filter Band
+
+TCI exposes the active receiver passband through `RX_FILTER_BAND`. Bounds are
+signed Hz offsets from the receiver's VFOA frequency (for example, USB may be
+`[30, 2700]` and LSB may be `[-2900, -70]`). The client tracks unsolicited
+updates and provides read/write helpers:
+
+```ts
+const band = await client.getRxFilterBand();
+await client.setRxFilterBand(30, 2700);
+console.log(client.getState().rxFilterBands['0']);
+```
+
 ## IQ Streams
 
 ```ts

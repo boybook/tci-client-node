@@ -236,6 +236,8 @@ export interface TciClientState {
   drive: Record<string, number>;
   tuneDrive: Record<string, number>;
   split: Record<string, boolean>;
+  /** RX filter passband per receiver, expressed as Hz offsets from VFOA. */
+  rxFilterBands: Record<string, [number, number]>;
   rxSensors: Record<string, Record<string, number | string | boolean>>;
   txSensors: Record<string, Record<string, number | string | boolean>>;
   audio?: Required<Pick<TciAudioConfig, 'sampleRate' | 'channels' | 'sampleType' | 'samplesPerFrame'>> & {
@@ -343,6 +345,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       drive: {},
       tuneDrive: {},
       split: {},
+      rxFilterBands: {},
       dialectWarnings: [],
       rxSensors: {},
       txSensors: {},
@@ -618,6 +621,37 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     const reply = await this.request('MODULATION', [receiver]);
     const mode = reply.args.length >= 3 ? reply.args[2] : reply.args[1];
     return (mode ?? this.state.modes[rxVfoKey(receiver, this.options.vfo)])?.toLowerCase();
+  }
+
+  async setRxFilterBand(
+    lowerHz: number,
+    upperHz: number,
+    receiver = this.options.receiver,
+    options: TciWriteOptions = {},
+  ): Promise<void> {
+    const lower = Math.round(lowerHz);
+    const upper = Math.round(upperHz);
+    if (!Number.isFinite(lower) || !Number.isFinite(upper) || upper < lower) {
+      throw new TciError('protocol-error', `Invalid RX filter band: ${lowerHz},${upperHz}`);
+    }
+    const key = String(receiver);
+    await this.sendStateWrite(
+      'RX_FILTER_BAND',
+      [receiver, lower, upper],
+      (state) => {
+        const current = state.rxFilterBands[key];
+        return current?.[0] === lower && current?.[1] === upper;
+      },
+      `RX_FILTER_BAND:${receiver},${lower},${upper}`,
+      options,
+    );
+  }
+
+  async getRxFilterBand(receiver = this.options.receiver): Promise<[number, number] | undefined> {
+    const reply = await this.request('RX_FILTER_BAND', [receiver]);
+    const values = parseNumberPair(reply.args.slice(1, 3));
+    if (values) return values;
+    return this.state.rxFilterBands[String(receiver)];
   }
 
   async setPtt(enabled: boolean, options: TciPttOptions = {}): Promise<void> {
@@ -1175,6 +1209,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     reducers.set('drive', (args) => this.applyDrive(args));
     reducers.set('tune_drive', (args) => this.applyTuneDrive(args));
     reducers.set('split_enable', (args) => this.applyBooleanByFirstArg(this.state.split, args));
+    reducers.set('rx_filter_band', (args) => this.applyRxFilterBand(args));
     reducers.set('rx_channel_sensors', (args) => this.applyRxChannelSensors(args));
     reducers.set('rx_channel_sensors_ex', (args) => this.applyRxChannelSensors(args));
     reducers.set('rx_sensors', (args) => this.applyRxSensors(args));
@@ -1228,6 +1263,15 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     const trx = args[0] ?? String(this.options.trx);
     this.state.ptt[trx] = parseBoolean(args[1]) ?? false;
     this.state.pttSource[trx] = args[2]?.toLowerCase();
+  }
+
+  private applyRxFilterBand(args: string[]): void {
+    if (args.length < 3) return;
+    const receiver = parseNumber(args[0]);
+    const lower = parseNumber(args[1]);
+    const upper = parseNumber(args[2]);
+    if (receiver === undefined || lower === undefined || upper === undefined || upper < lower) return;
+    this.state.rxFilterBands[String(receiver)] = [lower, upper];
   }
 
   private applyBooleanByFirstArg(target: Record<string, boolean>, args: string[]): void {
@@ -1409,6 +1453,7 @@ function cloneState(state: TciClientState): TciClientState {
     drive: { ...state.drive },
     tuneDrive: { ...state.tuneDrive },
     split: { ...state.split },
+    rxFilterBands: Object.fromEntries(Object.entries(state.rxFilterBands).map(([key, band]) => [key, [...band] as [number, number]])),
     dialectWarnings: [...state.dialectWarnings],
     rxSensors: cloneNested(state.rxSensors),
     txSensors: cloneNested(state.txSensors),
