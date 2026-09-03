@@ -605,6 +605,35 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     return parseNumber(reply.args[2]) ?? this.state.frequencies[rxVfoKey(receiver, vfo)];
   }
 
+  /**
+   * Move the receiver's DDS/IQ center frequency without treating it as a
+   * VFO-only write.  TCI servers use DDS to identify the center of the IQ
+   * stream and broadcast the applied value as `DDS:<receiver>,<frequency>`.
+   */
+  async setDdsFrequency(
+    frequencyHz: number,
+    receiver = this.options.receiver,
+    options: TciWriteOptions = {},
+  ): Promise<void> {
+    const frequency = Math.round(frequencyHz);
+    if (!Number.isFinite(frequency) || frequency < 0) {
+      throw new TciError('protocol-error', `Invalid TCI DDS frequency: ${frequencyHz}`);
+    }
+    const key = String(receiver);
+    await this.sendStateWrite(
+      'DDS',
+      [receiver, frequency],
+      (state) => state.dds[key] === frequency,
+      `DDS:${receiver},${frequency}`,
+      { settleMs: this.options.frequencyWriteSettleMs, ...options },
+    );
+  }
+
+  async getDdsFrequency(receiver = this.options.receiver): Promise<number | undefined> {
+    const reply = await this.request('DDS', [receiver]);
+    return parseNumber(reply.args[1]) ?? this.state.dds[String(receiver)];
+  }
+
   async setMode(mode: string, receiver = this.options.receiver, options: TciWriteOptions = {}): Promise<void> {
     const normalizedMode = mode.toUpperCase();
     const key = rxVfoKey(receiver, this.options.vfo);

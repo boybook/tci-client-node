@@ -59,6 +59,30 @@ it('reads and writes RX_FILTER_BAND passband offsets', async () => {
   await client.disconnect();
 });
 
+it('reads and writes the receiver DDS center frequency', async () => {
+  server = new MockTciServer();
+  await server.start();
+  const client = new TciClient({ url: server.url(), commandTimeoutMs: 200 });
+  await client.connect();
+
+  await expect(client.getDdsFrequency()).resolves.toBe(14_074_000);
+  await client.setDdsFrequency(14_075_250);
+  expect(client.getState().dds['0']).toBe(14_075_250);
+  expect(server.receivedCommands.some((command) => command.raw === 'DDS:0,14075250')).toBe(true);
+  await client.disconnect();
+});
+
+it('rejects invalid DDS center frequencies before writing', async () => {
+  server = new MockTciServer();
+  await server.start();
+  const client = new TciClient({ url: server.url(), commandTimeoutMs: 200 });
+  await client.connect();
+
+  await expect(client.setDdsFrequency(-1)).rejects.toMatchObject({ code: 'protocol-error' });
+  expect(server.receivedCommands.some((command) => command.name === 'dds' && command.args.length > 1)).toBe(false);
+  await client.disconnect();
+});
+
 it('resolves setFrequency only on the final matching state after band-change noise', async () => {
   server = new MockTciServer();
   server.onCommand(({ socket, command }) => {

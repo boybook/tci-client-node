@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2
+
+- Add typed `getDdsFrequency` / `setDdsFrequency` helpers for TCI receiver IQ/DDS center control.
+- Extend the mock TCI server and client tests with DDS center-frequency read/write coverage.
+
 ## 0.5.1
 
 - Add typed RX filter-band state tracking and `getRxFilterBand` / `setRxFilterBand` helpers for the standard `RX_FILTER_BAND` command.

@@ -36,6 +36,7 @@ export class MockTciServer {
   private sockets = new Set<WebSocket>();
   private handler?: MockTciServerCommandHandler;
   private frequency = 14_074_000;
+  private dds = 14_074_000;
   private mode = 'DIGU';
   private ptt = false;
   private drive = 30;
@@ -269,6 +270,14 @@ export class MockTciServer {
           this.frequency = Number(command.args[2]);
         }
         socket.send(formatTciCommand('VFO', [receiver, vfo, this.frequency]));
+        break;
+      }
+      case 'dds': {
+        const receiver = command.args[0] ?? '0';
+        if (command.args[1] !== undefined) {
+          this.dds = Number(command.args[1]);
+        }
+        socket.send(formatTciCommand('DDS', [receiver, this.dds]));
         break;
       }
       case 'modulation': {
