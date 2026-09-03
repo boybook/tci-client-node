@@ -82,6 +82,17 @@ await client.setRxFilterBand(30, 2700);
 console.log(client.getState().rxFilterBands['0']);
 ```
 
+## DDS Center Frequency
+
+The receiver DDS is the absolute center of the IQ stream. Use the dedicated
+helpers when moving a wide-band SDR viewport; `setFrequency()` remains the VFO
+control:
+
+```ts
+const centerHz = await client.getDdsFrequency();
+await client.setDdsFrequency(centerHz! + 10_000);
+```
+
 ## IQ Streams
 
 ```ts
