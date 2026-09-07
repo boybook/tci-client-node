@@ -103,40 +103,6 @@ it('resolves setFrequency only on the final matching state after band-change noi
   await client.disconnect();
 });
 
-it('uses asynchronous write semantics for Thetis VFO and DDS commands', async () => {
-  server = new MockTciServer({
-    startupCommands: [
-      'PROTOCOL:Thetis,2.0;',
-      'DEVICE:ANAN7000DLE;',
-      'VFO:0,0,14074000;',
-      'DDS:0,14074000;',
-      'MODULATION:0,CWU;',
-      'READY;',
-    ],
-  });
-  // Thetis queues the state notification independently. Simulate a server
-  // that accepts the command without echoing it on the command turn.
-  server.onCommand(({ command }) => command.name === 'vfo' || command.name === 'dds');
-  await server.start();
-
-  const client = new TciClient({ url: server.url(), writeTimeoutMs: 20, frequencyWriteSettleMs: 0 });
-  const ready = onceClientEvent(client, 'ready');
-  await client.connect();
-  await ready;
-
-  await expect(client.setFrequency(7_074_000)).resolves.toBeUndefined();
-  await expect(client.setDdsFrequency(7_075_000)).resolves.toBeUndefined();
-  await waitFor(() => server!.receivedCommands.some((command) => command.raw === 'VFO:0,0,7074000'));
-  await waitFor(() => server!.receivedCommands.some((command) => command.raw === 'DDS:0,7075000'));
-  expect(server.receivedCommands.map((command) => command.raw)).toEqual(expect.arrayContaining([
-    'VFO:0,0,7074000',
-    'DDS:0,7075000',
-  ]));
-  expect(client.getState().connected).toBe(true);
-
-  await client.disconnect();
-});
-
 it('treats already-applied frequency and PTT writes as idempotent when the server would not echo', async () => {
   server = new MockTciServer({
     startupCommands: [

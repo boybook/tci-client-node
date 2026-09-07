@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.4
+
+- Replace Thetis's default optimistic VFO completion with target-matched asynchronous
+  confirmation and one read-only probe inside the original write deadline.
+- Confirm Thetis DDS writes from fresh receiver-specific state, preserving the
+  server-reported IQ center (including CW offsets) without inventing a pitch value.
+- Preserve caller acknowledgement overrides and strict PTT confirmation.
+- Clear state on reconnect, ignore old transport events, and cancel pending probes
+  on disconnect. Include requested/observed frequency and address in timeout details.
+- Keep acknowledgement capability fields optional for existing custom dialects.
+
 ## 0.5.3
 
 - Model asynchronous VFO and DDS write acknowledgement as TCI dialect capabilities.

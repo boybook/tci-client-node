@@ -293,7 +293,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   private readonly transportFactory: TciTransportFactory;
   private transport?: TciTransport;
   private readonly queue: TciCommandQueue;
-  private readonly state: TciClientState;
+  private state: TciClientState;
   private readonly stateReducers: Map<string, (args: string[]) => void>;
   private readonly dialectRegistry: TciDialectRegistry;
   private activeDialect?: TciDialect;
@@ -333,25 +333,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       send: (raw) => this.sendRaw(raw),
     });
     this.queue.setConnected(false);
-    this.state = {
-      connected: false,
-      ready: false,
-      modulations: [],
-      frequencies: {},
-      modes: {},
-      ptt: {},
-      pttSource: {},
-      tune: {},
-      drive: {},
-      tuneDrive: {},
-      split: {},
-      rxFilterBands: {},
-      dialectWarnings: [],
-      rxSensors: {},
-      txSensors: {},
-      iq: { activeReceivers: {} },
-      dds: {},
-    };
+    this.state = createInitialState();
     this.stateReducers = this.createStateReducers();
   }
 
@@ -589,19 +571,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     vfo = this.options.vfo,
     options: TciWriteOptions = {},
   ): Promise<void> {
-    const frequency = Math.round(frequencyHz);
-    const key = rxVfoKey(receiver, vfo);
-    await this.sendStateWrite(
-      'VFO',
-      [receiver, vfo, frequency],
-      (state) => state.frequencies[key] === frequency,
-      `VFO:${receiver},${vfo},${frequency}`,
-      {
-        settleMs: this.options.frequencyWriteSettleMs,
-        ackMode: this.activeDialect?.frequencyWriteAcknowledgement,
-        ...options,
-      },
-    );
+    await this.writeFrequencyState('VFO', [receiver, vfo], frequencyHz, options);
   }
 
   async getFrequency(receiver = this.options.receiver, vfo = this.options.vfo): Promise<number | undefined> {
@@ -619,22 +589,103 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     receiver = this.options.receiver,
     options: TciWriteOptions = {},
   ): Promise<void> {
+    await this.writeFrequencyState('DDS', [receiver], frequencyHz, options);
+  }
+
+  private async writeFrequencyState(
+    name: 'VFO' | 'DDS',
+    address: readonly number[],
+    frequencyHz: number,
+    options: TciWriteOptions,
+  ): Promise<void> {
     const frequency = Math.round(frequencyHz);
-    if (!Number.isFinite(frequency) || frequency < 0) {
-      throw new TciError('protocol-error', `Invalid TCI DDS frequency: ${frequencyHz}`);
+    if (!Number.isSafeInteger(frequency) || frequency < 0) {
+      throw new TciError('protocol-error', `Invalid TCI ${name} frequency: ${frequencyHz}`);
     }
-    const key = String(receiver);
-    await this.sendStateWrite(
-      'DDS',
-      [receiver, frequency],
-      (state) => state.dds[key] === frequency,
-      `DDS:${receiver},${frequency}`,
-      {
-        settleMs: this.options.frequencyWriteSettleMs,
-        ackMode: this.activeDialect?.ddsWriteAcknowledgement,
+    for (const value of address) normalizeNonNegativeInteger(value, `${name} address`);
+    if (!this.isConnected()) throw new TciError('not-connected', 'TCI socket is not connected');
+
+    const dialect = this.requireDialect();
+    const policy = (name === 'VFO' ? dialect.frequencyWriteAcknowledgement : dialect.ddsWriteAcknowledgement) ?? 'state';
+    const ackMode = options.ackMode ?? (policy === 'optimistic' ? 'optimistic' : this.options.writeAckMode);
+    const args = [...address, frequency];
+    const description = `${name}:${args.join(',')}`;
+    const readValue = (state: TciClientState) => name === 'VFO'
+      ? state.frequencies[rxVfoKey(address[0]!, address[1]!)]
+      : state.dds[String(address[0])];
+    const isApplied = (state: TciClientState) => readValue(state) === frequency;
+
+    if (ackMode !== 'state' || policy === 'state') {
+      await this.sendStateWrite(name, args, isApplied, description, {
         ...options,
-      },
-    );
+        ackMode,
+        settleMs: options.settleMs ?? this.options.frequencyWriteSettleMs,
+      });
+      return;
+    }
+    // Reported DDS values may use a different coordinate system from writes;
+    // a cached IQ center cannot prove that the requested receiver center is set.
+    const reportedDds = name === 'DDS' && policy === 'reported-state';
+    if (!reportedDds && isApplied(this.state)) return;
+
+    const timeoutMs = options.timeoutMs ?? this.options.writeTimeoutMs;
+    const settleMs = options.settleMs ?? this.options.frequencyWriteSettleMs;
+    const transport = this.transport;
+    await new Promise<void>((resolve, reject) => {
+      let finished = false;
+      let observedHz: number | undefined;
+      let readbackSent = false;
+      let readbackTimer: NodeJS.Timeout | undefined;
+      let settleTimer: NodeJS.Timeout | undefined;
+      const cleanup = () => {
+        clearTimeout(deadline);
+        clearTimeout(readbackTimer);
+        clearTimeout(settleTimer);
+        this.off('command', onCommand);
+        this.off('disconnected', onDisconnected);
+      };
+      const finish = (error?: unknown) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      };
+      const onCommand = (command: TciCommand) => {
+        if (command.name !== name.toLowerCase()
+          || command.args.length !== address.length + 1
+          || !address.every((value, index) => parseNumber(command.args[index]) === value)) return;
+        const value = parseNumber(command.args[address.length]);
+        if (value === undefined || !Number.isSafeInteger(value) || value < 0) return;
+        if (value !== observedHz) {
+          clearTimeout(settleTimer);
+          settleTimer = undefined;
+        }
+        observedHz = value;
+        if (!reportedDds && value !== frequency) return;
+        if (settleMs <= 0) finish();
+        else if (!settleTimer) settleTimer = setTimeout(() => finish(), settleMs);
+      };
+      const onDisconnected = () => finish(new TciError('disconnected', `Disconnected while confirming ${description}`));
+      const deadline = setTimeout(() => finish(new TciError(
+        'command-timeout',
+        `Timed out confirming TCI ${description}; observed=${observedHz ?? 'none'}, readback=${readbackSent}`,
+        { command: name, address, requestedHz: frequency, observedHz, readbackSent, dialect: dialect.id },
+      )), timeoutMs);
+      this.on('command', onCommand);
+      this.on('disconnected', onDisconnected);
+      // One read-only probe within the original deadline. Keep listening to
+      // matching asynchronous state; neither the write nor its timeout repeats.
+      void this.sendCommand(name, args, { waitForReply: false }).then(() => {
+        if (finished) return;
+        readbackTimer = setTimeout(() => {
+          if (finished) return;
+          if (this.transport !== transport || !this.isConnected()) { onDisconnected(); return; }
+          readbackSent = true;
+          void this.sendCommand(name, address, { waitForReply: false }).catch(finish);
+        }, Math.min(250, Math.max(1, Math.floor(timeoutMs / 3))));
+      }).catch(finish);
+    });
   }
 
   async getDdsFrequency(receiver = this.options.receiver): Promise<number | undefined> {
@@ -1031,13 +1082,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     this.handshakeError = undefined;
     this.activeDialect = undefined;
     this.initializationCommands = [];
-    this.state.ready = false;
-    this.state.protocol = undefined;
-    this.state.protocolName = undefined;
-    this.state.protocolVersion = undefined;
-    this.state.dialectId = undefined;
-    this.state.dialectConfidence = undefined;
-    this.state.dialectWarnings = [];
+    this.state = createInitialState();
   }
 
   private waitForHandshake(): Promise<TciHandshakeResult> {
@@ -1105,10 +1150,10 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   private attachTransport(transport: TciTransport): void {
-    transport.on('text', (raw) => this.handleText(raw));
-    transport.on('binary', (raw) => this.handleBinary(raw));
-    transport.on('disconnected', (reason) => this.handleClose(reason));
-    transport.on('error', (error) => this.handleError(error));
+    transport.on('text', (raw) => { if (this.transport === transport) this.handleText(raw); });
+    transport.on('binary', (raw) => { if (this.transport === transport) this.handleBinary(raw); });
+    transport.on('disconnected', (reason) => { if (this.transport === transport) this.handleClose(reason); });
+    transport.on('error', (error) => { if (this.transport === transport) this.handleError(error); });
   }
 
   private async sendRaw(raw: string): Promise<void> {
@@ -1412,6 +1457,28 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
 export function createTciClient(options: TciClientOptions): TciClient {
   return new TciClient(options);
+}
+
+function createInitialState(): TciClientState {
+  return {
+    connected: false,
+    ready: false,
+    modulations: [],
+    frequencies: {},
+    modes: {},
+    ptt: {},
+    pttSource: {},
+    tune: {},
+    drive: {},
+    tuneDrive: {},
+    split: {},
+    rxFilterBands: {},
+    dialectWarnings: [],
+    rxSensors: {},
+    txSensors: {},
+    iq: { activeReceivers: {} },
+    dds: {},
+  };
 }
 
 function rxVfoKey(receiver: string | number, vfo: string | number): string {

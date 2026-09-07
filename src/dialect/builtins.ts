@@ -149,11 +149,13 @@ export const thetisDialect: TciDialect = new StandardTciDialect({
   id: 'thetis-2.0', label: 'Thetis / TCI 2.0', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: true,
-  // Thetis queues VFO/DDS changes and broadcasts them asynchronously. DDS
-  // notifications may additionally include the CW pitch shift, so exact
-  // command-state equality is not a valid acknowledgement for either write.
-  frequencyWriteAcknowledgement: 'optimistic',
-  ddsWriteAcknowledgement: 'optimistic',
+  // TCIServer.cs queues both VFO notifications and queries. A query can
+  // recover an omitted/coalesced notification without resending the write.
+  frequencyWriteAcknowledgement: 'state-or-readback',
+  // DDS input is the receiver center; its notification is the IQ center and
+  // includes GetDSPcwPitchShiftToZero(). Preserve the reported value rather
+  // than inventing a CW pitch or requiring equality in different coordinates.
+  ddsWriteAcknowledgement: 'reported-state',
   meterAdapter: new StandardTciMeterAdapter({
     interval: { minMs: 30, maxMs: 1_000 },
     supportsRxExtended: true,

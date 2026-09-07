@@ -144,6 +144,24 @@ The high-level client delegates command shapes and binary stream semantics to a 
 
 `generic-observed` derives legacy versus TRX-indexed `DRIVE` syntax from startup state. Applications can provide a custom dialect directly or use a custom `TciDialectRegistry`.
 
+VFO and DDS confirmation policies are also owned by the dialect. Thetis VFO
+writes complete only after a matching receiver/channel reports the target;
+a missing broadcast triggers one read-only query within the existing deadline.
+No acknowledgement means the write fails, including for Fake It or other
+callers that use `setFrequency()` directly before transmitting.
+
+Thetis DDS write arguments represent the receiver center, while its DDS
+notifications represent the IQ center and include the server's CW pitch shift.
+The client waits for fresh receiver-specific DDS state and retains that reported
+value in `getState().dds` and IQ frame metadata. It does not infer a pitch or
+overwrite the reported center with the requested number. Callers keep DDS
+operations serialized and use the reported range for presentation.
+
+Other built-in dialects retain strict state equality. Optional custom dialect
+fields `frequencyWriteAcknowledgement` and `ddsWriteAcknowledgement` default to
+`state`. Per-call acknowledgement options override the client default; PTT is
+independent of frequency policies and remains state-confirmed by default.
+
 ## Power Writes
 
 Servers may apply a local band or PA safety limit and broadcast a different drive value. Use the detailed result when the difference matters:
