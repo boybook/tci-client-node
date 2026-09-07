@@ -13,6 +13,8 @@ export type TciDialectId = BuiltInTciDialectId | (string & { readonly __tciDiale
 
 export type TciDialectSelection = 'auto' | TciDialectId | TciDialect;
 export type TciStreamLengthSemantics = 'scalar' | 'per-channel' | 'auto';
+/** How a server acknowledges a control write on its command channel. */
+export type TciStateWriteAcknowledgement = 'state' | 'optimistic';
 
 export interface TciProtocolIdentity {
   programName?: string;
@@ -46,6 +48,10 @@ export interface TciDialect {
   readonly supportsTxAudioSource: boolean;
   readonly supportsIqStream: boolean;
   readonly iqSampleRates: readonly number[];
+  /** VFO writes may be asynchronous server events rather than command replies. */
+  readonly frequencyWriteAcknowledgement: TciStateWriteAcknowledgement;
+  /** DDS notifications can carry server-side offsets (for example CW pitch). */
+  readonly ddsWriteAcknowledgement: TciStateWriteAcknowledgement;
   readonly meterAdapter?: TciMeterAdapter;
   detect(context: TciDialectDetectionContext): TciDialectScore;
   resolve?(context: TciDialectDetectionContext): TciDialect;

@@ -17,6 +17,8 @@ interface StandardDialectOptions {
   supportsTxAudioSource: boolean;
   supportsIqStream: boolean;
   iqSampleRates: readonly number[];
+  frequencyWriteAcknowledgement?: TciDialect['frequencyWriteAcknowledgement'];
+  ddsWriteAcknowledgement?: TciDialect['ddsWriteAcknowledgement'];
   driveHasTrx: boolean;
   meterAdapter?: TciDialect['meterAdapter'];
   detect: (context: TciDialectDetectionContext) => TciDialectScore;
@@ -31,6 +33,8 @@ class StandardTciDialect implements TciDialect {
   readonly supportsTxAudioSource: boolean;
   readonly supportsIqStream: boolean;
   readonly iqSampleRates: readonly number[];
+  readonly frequencyWriteAcknowledgement: TciDialect['frequencyWriteAcknowledgement'];
+  readonly ddsWriteAcknowledgement: TciDialect['ddsWriteAcknowledgement'];
   readonly meterAdapter?: TciDialect['meterAdapter'];
   private readonly driveHasTrx: boolean;
   private readonly detector: StandardDialectOptions['detect'];
@@ -44,6 +48,8 @@ class StandardTciDialect implements TciDialect {
     this.supportsTxAudioSource = options.supportsTxAudioSource;
     this.supportsIqStream = options.supportsIqStream;
     this.iqSampleRates = [...options.iqSampleRates];
+    this.frequencyWriteAcknowledgement = options.frequencyWriteAcknowledgement ?? 'state';
+    this.ddsWriteAcknowledgement = options.ddsWriteAcknowledgement ?? 'state';
     this.meterAdapter = options.meterAdapter;
     this.driveHasTrx = options.driveHasTrx;
     this.detector = options.detect;
@@ -143,6 +149,11 @@ export const thetisDialect: TciDialect = new StandardTciDialect({
   id: 'thetis-2.0', label: 'Thetis / TCI 2.0', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: true,
+  // Thetis queues VFO/DDS changes and broadcasts them asynchronously. DDS
+  // notifications may additionally include the CW pitch shift, so exact
+  // command-state equality is not a valid acknowledgement for either write.
+  frequencyWriteAcknowledgement: 'optimistic',
+  ddsWriteAcknowledgement: 'optimistic',
   meterAdapter: new StandardTciMeterAdapter({
     interval: { minMs: 30, maxMs: 1_000 },
     supportsRxExtended: true,

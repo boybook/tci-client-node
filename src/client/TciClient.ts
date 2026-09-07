@@ -596,7 +596,11 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       [receiver, vfo, frequency],
       (state) => state.frequencies[key] === frequency,
       `VFO:${receiver},${vfo},${frequency}`,
-      { settleMs: this.options.frequencyWriteSettleMs, ...options },
+      {
+        settleMs: this.options.frequencyWriteSettleMs,
+        ackMode: this.activeDialect?.frequencyWriteAcknowledgement,
+        ...options,
+      },
     );
   }
 
@@ -625,7 +629,11 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       [receiver, frequency],
       (state) => state.dds[key] === frequency,
       `DDS:${receiver},${frequency}`,
-      { settleMs: this.options.frequencyWriteSettleMs, ...options },
+      {
+        settleMs: this.options.frequencyWriteSettleMs,
+        ackMode: this.activeDialect?.ddsWriteAcknowledgement,
+        ...options,
+      },
     );
   }
 

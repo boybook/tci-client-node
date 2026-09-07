@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3
+
+- Model asynchronous VFO and DDS write acknowledgement as TCI dialect capabilities.
+- Use optimistic command completion for Thetis VFO/DDS writes; callers can still
+  perform an independent state or physical readback confirmation.
+
 ## 0.5.2
 
 - Add typed `getDdsFrequency` / `setDdsFrequency` helpers for TCI receiver IQ/DDS center control.
