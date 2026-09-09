@@ -5,6 +5,7 @@ export type BuiltInTciDialectId =
   | 'expertsdr-1.4'
   | 'expertsdr-1.5-1.8'
   | 'expertsdr-1.9-2.0'
+  | 'expertsdr3-1.9-2.0'
   | 'aethersdr-1.5'
   | 'thetis-2.0'
   | 'generic-observed';
@@ -15,6 +16,8 @@ export type TciDialectSelection = 'auto' | TciDialectId | TciDialect;
 export type TciStreamLengthSemantics = 'scalar' | 'per-channel' | 'auto';
 /** How a server acknowledges a control write on its command channel. */
 export type TciStateWriteAcknowledgement = 'state' | 'state-or-readback' | 'reported-state' | 'optimistic';
+/** Meaning of the optional LINE_OUT_START command on a TCI server. */
+export type TciLineOutStreamMode = 'native-stream' | 'vac-control' | 'unsupported' | 'unknown';
 
 export interface TciProtocolIdentity {
   programName?: string;
@@ -47,6 +50,7 @@ export interface TciDialect {
   readonly supportsStreamChannels: boolean;
   readonly supportsTxAudioSource: boolean;
   readonly supportsIqStream: boolean;
+  readonly lineOutStreamMode?: TciLineOutStreamMode;
   readonly iqSampleRates: readonly number[];
   /** VFO writes may be asynchronous server events rather than command replies. */
   readonly frequencyWriteAcknowledgement?: TciStateWriteAcknowledgement;

@@ -1,5 +1,5 @@
 import { TciError } from '../errors.js';
-import { builtInDialects } from './builtins.js';
+import { builtInDialects, tciDialectAliases } from './builtins.js';
 import type {
   TciDialect,
   TciDialectDetection,
@@ -13,6 +13,10 @@ export class TciDialectRegistry {
 
   constructor(dialects: readonly TciDialect[] = builtInDialects) {
     for (const dialect of dialects) this.register(dialect);
+    for (const [alias, canonical] of Object.entries(tciDialectAliases)) {
+      const dialect = this.dialects.get(canonical);
+      if (dialect) this.dialects.set(alias, dialect);
+    }
   }
 
   register(dialect: TciDialect): void { this.dialects.set(dialect.id, dialect); }

@@ -910,6 +910,28 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     }
   }
 
+  /** Start the fixed-format Line Out stream, which includes TX monitor audio. */
+  async startLineOut(receiver = this.options.receiver): Promise<void> {
+    await this.sendCommand('LINE_OUT_START', [receiver], { waitForReply: false });
+  }
+
+  /** Stop the fixed-format Line Out stream. */
+  async stopLineOut(receiver = this.options.receiver): Promise<void> {
+    await this.sendCommand('LINE_OUT_STOP', [receiver], { waitForReply: false });
+  }
+
+  /** Enable or disable the radio's hardware TX monitor. */
+  async setMonitorEnabled(enabled: boolean): Promise<void> {
+    await this.sendCommand('MON_ENABLE', [enabled], { waitForReply: false });
+  }
+
+  async setMonitorVolumeDb(volumeDb: number): Promise<void> {
+    if (!Number.isFinite(volumeDb) || volumeDb < -60 || volumeDb > 0) {
+      throw new TciError('protocol-error', `Invalid TCI monitor volume: ${volumeDb}`);
+    }
+    await this.sendCommand('MON_VOLUME', [volumeDb], { waitForReply: false });
+  }
+
   sendTxAudio(options: BuildTxAudioFrameOptions): void {
     const frame = buildTxAudioFrame({
       receiver: this.options.receiver,

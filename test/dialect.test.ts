@@ -21,12 +21,18 @@ describe('TCI dialect detection', () => {
   it.each([
     ['PROTOCOL:ExpertSDR,1.4;DEVICE:SunSDR;VFO:0,0,7100000;READY;', 'expertsdr-1.4'],
     ['PROTOCOL:ExpertSDR2,1.8;DEVICE:SunSDR2PRO;VFO:0,0,7100000;READY;', 'expertsdr-1.5-1.8'],
-    ['PROTOCOL:ExpertSDR3,1.10;DEVICE:SunSDR2DX;VFO:0,0,7100000;READY;', 'expertsdr-1.9-2.0'],
+    ['PROTOCOL:ExpertSDR3,1.10;DEVICE:SunSDR2DX;VFO:0,0,7100000;READY;', 'expertsdr3-1.9-2.0'],
     ['PROTOCOL:ExpertSDR3,1.5;DEVICE:AetherSDR;AUDIO_STREAM_CHANNELS:2;VFO:0,0,7100000;READY;', 'aethersdr-1.5'],
     ['PROTOCOL:Thetis,2.0;DEVICE:ANAN7000DLE;VFO:0,0,7100000;READY;', 'thetis-2.0'],
     ['PROTOCOL:ExpertSDR3,2.0;DEVICE:SunSDR2PRO;TX_PROFILES_EX:a,b;VFO:0,0,7100000;READY;', 'thetis-2.0'],
   ])('selects %s as %s', (startup, expected) => {
     expect(detect(startup).dialect.id).toBe(expected);
+  });
+
+  it('declares the server-specific Line Out meaning', () => {
+    expect(detect('PROTOCOL:ExpertSDR3,2.0;DEVICE:SunSDR;READY;').dialect.lineOutStreamMode).toBe('native-stream');
+    expect(detect('PROTOCOL:Thetis,2.0;DEVICE:ANAN;READY;').dialect.lineOutStreamMode).toBe('vac-control');
+    expect(detect('PROTOCOL:Custom;DEVICE:Custom;READY;').dialect.lineOutStreamMode).toBe('unknown');
   });
 
   it('compares 1.10 as newer than 1.9 instead of parsing it as a float', () => {
@@ -38,5 +44,9 @@ describe('TCI dialect detection', () => {
     expect(result.dialect.id).toBe('generic-observed');
     expect(result.dialect.buildDriveSetArgs(0, 40)).toEqual([40]);
     expect(result.confidence).toBe('low');
+  });
+
+  it('resolves the former ExpertSDR modern ID as a compatibility alias', () => {
+    expect(new TciDialectRegistry().get('expertsdr-1.9-2.0')?.id).toBe('expertsdr3-1.9-2.0');
   });
 });

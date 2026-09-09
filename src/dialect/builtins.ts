@@ -1,5 +1,6 @@
 import type {
   TciDialect,
+  TciDialectId,
   TciDialectDetectionContext,
   TciDialectScore,
   TciDriveState,
@@ -16,6 +17,7 @@ interface StandardDialectOptions {
   supportsStreamChannels: boolean;
   supportsTxAudioSource: boolean;
   supportsIqStream: boolean;
+  lineOutStreamMode?: TciDialect['lineOutStreamMode'];
   iqSampleRates: readonly number[];
   frequencyWriteAcknowledgement?: TciDialect['frequencyWriteAcknowledgement'];
   ddsWriteAcknowledgement?: TciDialect['ddsWriteAcknowledgement'];
@@ -32,6 +34,7 @@ class StandardTciDialect implements TciDialect {
   readonly supportsStreamChannels: boolean;
   readonly supportsTxAudioSource: boolean;
   readonly supportsIqStream: boolean;
+  readonly lineOutStreamMode: TciDialect['lineOutStreamMode'];
   readonly iqSampleRates: readonly number[];
   readonly frequencyWriteAcknowledgement: TciDialect['frequencyWriteAcknowledgement'];
   readonly ddsWriteAcknowledgement: TciDialect['ddsWriteAcknowledgement'];
@@ -47,6 +50,7 @@ class StandardTciDialect implements TciDialect {
     this.supportsStreamChannels = options.supportsStreamChannels;
     this.supportsTxAudioSource = options.supportsTxAudioSource;
     this.supportsIqStream = options.supportsIqStream;
+    this.lineOutStreamMode = options.lineOutStreamMode ?? 'unknown';
     this.iqSampleRates = [...options.iqSampleRates];
     this.frequencyWriteAcknowledgement = options.frequencyWriteAcknowledgement ?? 'state';
     this.ddsWriteAcknowledgement = options.ddsWriteAcknowledgement ?? 'state';
@@ -107,6 +111,7 @@ function programIncludes(context: TciDialectDetectionContext, value: string): bo
 export const expertSdr14Dialect: TciDialect = new StandardTciDialect({
   id: 'expertsdr-1.4', label: 'ExpertSDR / TCI 1.4', streamLengthSemantics: 'per-channel',
   supportsStreamChannels: false, supportsTxAudioSource: false, supportsIqStream: true,
+  lineOutStreamMode: 'native-stream',
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: false,
   meterAdapter: new StandardTciMeterAdapter({ interval: { reportsApplied: false } }),
   detect: (context) => {
@@ -119,6 +124,7 @@ export const expertSdr14Dialect: TciDialect = new StandardTciDialect({
 export const expertSdrLegacyDialect: TciDialect = new StandardTciDialect({
   id: 'expertsdr-1.5-1.8', label: 'ExpertSDR / TCI 1.5-1.8', streamLengthSemantics: 'per-channel',
   supportsStreamChannels: false, supportsTxAudioSource: false, supportsIqStream: true,
+  lineOutStreamMode: 'native-stream',
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: true,
   meterAdapter: new StandardTciMeterAdapter({ interval: { reportsApplied: false } }),
   detect: (context) => {
@@ -129,8 +135,9 @@ export const expertSdrLegacyDialect: TciDialect = new StandardTciDialect({
 });
 
 export const expertSdrModernDialect: TciDialect = new StandardTciDialect({
-  id: 'expertsdr-1.9-2.0', label: 'ExpertSDR / TCI 1.9-2.0', streamLengthSemantics: 'scalar',
+  id: 'expertsdr3-1.9-2.0', label: 'ExpertSDR3 / TCI 1.9-2.0', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
+  lineOutStreamMode: 'native-stream',
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: true,
   meterAdapter: new StandardTciMeterAdapter({ interval: { reportsApplied: false } }),
   detect: (context) => {
@@ -148,6 +155,7 @@ export const expertSdrModernDialect: TciDialect = new StandardTciDialect({
 export const thetisDialect: TciDialect = new StandardTciDialect({
   id: 'thetis-2.0', label: 'Thetis / TCI 2.0', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
+  lineOutStreamMode: 'vac-control',
   iqSampleRates: [48_000, 96_000, 192_000, 384_000], driveHasTrx: true,
   // TCIServer.cs queues both VFO notifications and queries. A query can
   // recover an omitted/coalesced notification without resending the write.
@@ -178,6 +186,7 @@ export const thetisDialect: TciDialect = new StandardTciDialect({
 export const aetherSdrDialect: TciDialect = new StandardTciDialect({
   id: 'aethersdr-1.5', label: 'AetherSDR / TCI 1.5 hybrid', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
+  lineOutStreamMode: 'unknown',
   iqSampleRates: [24_000, 48_000, 96_000, 192_000], driveHasTrx: true,
   meterAdapter: new StandardTciMeterAdapter({
     interval: { fixedMs: 200 },
@@ -219,6 +228,7 @@ export const genericObservedDialect: TciDialect = new StandardTciDialect({
       supportsStreamChannels: context.commandNames.has('audio_stream_channels'),
       supportsTxAudioSource: compareTciVersion(version(context) ?? [0], [2, 0]) >= 0,
       supportsIqStream: context.commandNames.has('iq_samplerate'),
+      lineOutStreamMode: 'unknown',
       iqSampleRates: context.commandNames.has('iq_samplerate') ? [48_000] : [],
       driveHasTrx,
       meterAdapter: createUnknownTciMeterAdapter(),
@@ -230,6 +240,11 @@ export const genericObservedDialect: TciDialect = new StandardTciDialect({
 export const builtInDialects: readonly TciDialect[] = [
   aetherSdrDialect, thetisDialect, expertSdr14Dialect, expertSdrLegacyDialect, expertSdrModernDialect, genericObservedDialect,
 ];
+
+/** Deprecated configuration IDs retained as aliases for persisted profiles. */
+export const tciDialectAliases: Readonly<Record<string, TciDialectId>> = {
+  'expertsdr-1.9-2.0': 'expertsdr3-1.9-2.0',
+};
 
 export function parseTciVersion(value: string | undefined): VersionTuple | undefined {
   if (!value) return undefined;

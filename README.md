@@ -140,7 +140,7 @@ Meter support progresses from dialect declarations and enable acknowledgements t
 
 ## Dialects
 
-The high-level client delegates command shapes and binary stream semantics to a `TciDialect`. Built-in dialects are `expertsdr-1.4`, `expertsdr-1.5-1.8`, `expertsdr-1.9-2.0`, `aethersdr-1.5`, `thetis-2.0`, and `generic-observed`.
+The high-level client delegates command shapes and binary stream semantics to a `TciDialect`. Built-in dialects are `expertsdr-1.4`, `expertsdr-1.5-1.8`, `expertsdr3-1.9-2.0`, `aethersdr-1.5`, `thetis-2.0`, and `generic-observed`. The former `expertsdr-1.9-2.0` ID remains a deprecated alias for persisted configurations.
 
 `generic-observed` derives legacy versus TRX-indexed `DRIVE` syntax from startup state. Applications can provide a custom dialect directly or use a custom `TciDialectRegistry`.
 
