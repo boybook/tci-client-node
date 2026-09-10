@@ -5,3 +5,4 @@ export * from './audio/index.js';
 export * from './dialect/index.js';
 export * from './transport/index.js';
 export * from './meter/index.js';
+export * from './controls/index.js';

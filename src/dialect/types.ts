@@ -1,5 +1,6 @@
 import type { TciCommand } from '../protocol/text.js';
 import type { TciMeterAdapter } from '../meter/index.js';
+import type { TciControlAdapter } from '../controls/types.js';
 
 export type BuiltInTciDialectId =
   | 'expertsdr-1.4'
@@ -57,6 +58,8 @@ export interface TciDialect {
   /** DDS notifications can carry server-side offsets (for example CW pitch). */
   readonly ddsWriteAcknowledgement?: TciStateWriteAcknowledgement;
   readonly meterAdapter?: TciMeterAdapter;
+  /** Optional, explicit parameter support. Absence never implies standard controls. */
+  readonly controlAdapter?: TciControlAdapter;
   detect(context: TciDialectDetectionContext): TciDialectScore;
   resolve?(context: TciDialectDetectionContext): TciDialect;
   buildDriveSetArgs(trx: number, value: number): readonly unknown[];

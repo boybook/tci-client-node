@@ -7,17 +7,22 @@ import {
   type TciCommandInput,
 } from './text.js';
 
-export type TciCommandMatcher = (reply: TciCommand, request: TciCommand) => boolean;
+export type TciCommandMatcher = (reply: TciCommand, request: TciCommand, readback?: boolean) => boolean;
 
 export interface QueueCommandOptions {
   timeoutMs?: number;
   matcher?: TciCommandMatcher;
   signal?: AbortSignal;
+  /** Send without claiming that a device value was confirmed. Still serialized. */
+  sendOnly?: boolean;
+  /** One read-only fallback inside the same transaction and timeout budget. */
+  readback?: { command: TciCommandInput; afterMs: number; required?: boolean };
 }
 
 export interface QueuedCommandResult {
   request: TciCommand;
   reply: TciCommand;
+  readback?: boolean;
 }
 
 interface PendingCommand {
@@ -29,6 +34,10 @@ interface PendingCommand {
   reject: (error: TciError) => void;
   timer?: NodeJS.Timeout;
   abortCleanup?: () => void;
+  sendOnly?: boolean;
+  readback?: QueueCommandOptions['readback'];
+  readbackSent?: boolean;
+  readbackTimer?: NodeJS.Timeout;
 }
 
 export interface TciCommandQueueOptions {
@@ -71,6 +80,8 @@ export class TciCommandQueue {
         matcher: options.matcher ?? ((reply, req) => isCommandReplyTo(reply, req)),
         resolve,
         reject,
+        sendOnly: options.sendOnly,
+        readback: options.readback,
       };
 
       if (options.signal) {
@@ -94,7 +105,8 @@ export class TciCommandQueue {
       return false;
     }
     const reply = parseTciCommand(commandInput);
-    if (!active.matcher(reply, active.request)) {
+    if (active.sendOnly || (active.readback?.required && !active.readbackSent)) return false;
+    if (!active.matcher(reply, active.request, Boolean(active.readbackSent))) {
       return false;
     }
     this.finishActive(reply);
@@ -137,6 +149,21 @@ export class TciCommandQueue {
 
     try {
       await this.send(next.raw);
+      if (this.active !== next) return;
+      if (next.sendOnly) {
+        this.finishActive(next.request);
+      } else if (next.readback) {
+        next.readbackTimer = setTimeout(() => {
+          if (this.active !== next) return;
+          next.readbackSent = true;
+          const command = next.readback!.command;
+          const raw = typeof command === 'string' ? ensureSemicolon(command)
+            : formatTciCommand(command.originalName, command.args);
+          void Promise.resolve(this.send(raw)).catch((error) => {
+            this.rejectPending(next, new TciError('disconnected', String(error), error));
+          });
+        }, Math.max(0, next.readback.afterMs));
+      }
     } catch (error) {
       this.rejectPending(next, new TciError('disconnected', error instanceof Error ? error.message : String(error), error));
       if (this.active === next) {
@@ -155,8 +182,9 @@ export class TciCommandQueue {
     if (active.timer) {
       clearTimeout(active.timer);
     }
+    if (active.readbackTimer) clearTimeout(active.readbackTimer);
     active.abortCleanup?.();
-    active.resolve({ request: active.request, reply });
+    active.resolve({ request: active.request, reply, ...(active.readbackSent ? { readback: true } : {}) });
     void this.pump();
   }
 
@@ -164,6 +192,7 @@ export class TciCommandQueue {
     if (pending.timer) {
       clearTimeout(pending.timer);
     }
+    if (pending.readbackTimer) clearTimeout(pending.readbackTimer);
     pending.abortCleanup?.();
     const wasActive = this.active === pending;
     if (wasActive) {

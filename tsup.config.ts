@@ -9,6 +9,7 @@ export default defineConfig({
     'transport/index': 'src/transport/index.ts',
     'meter/index': 'src/meter/index.ts',
     'testing/index': 'src/testing/index.ts',
+    'controls/index': 'src/controls/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

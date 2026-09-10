@@ -1,5 +1,7 @@
 import { EventEmitter } from 'eventemitter3';
 import WebSocket from 'ws';
+import { TciControls, type TciControlDescriptor, type TciControlId, type TciControlValueMap,
+  type TciControlTarget, type TciControlState, type TciControlRequestOptions, type TciControlWriteResult } from '../controls/index.js';
 import { TciError, toTciError } from '../errors.js';
 import {
   buildTxAudioFrame,
@@ -252,6 +254,8 @@ export interface TciClientState {
 }
 
 export interface TciClientEvents {
+  controlChanged: (state: TciControlState) => void;
+  controlCapabilitiesChanged: (descriptors: TciControlDescriptor[]) => void;
   connected: () => void;
   disconnected: (reason?: unknown) => void;
   ready: (state: TciClientState) => void;
@@ -293,6 +297,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   private readonly transportFactory: TciTransportFactory;
   private transport?: TciTransport;
   private readonly queue: TciCommandQueue;
+  private readonly controls: TciControls;
   private state: TciClientState;
   private readonly stateReducers: Map<string, (args: string[]) => void>;
   private readonly dialectRegistry: TciDialectRegistry;
@@ -335,6 +340,29 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     this.queue.setConnected(false);
     this.state = createInitialState();
     this.stateReducers = this.createStateReducers();
+    this.controls = new TciControls({ enqueue: (raw, opts) => this.queue.enqueue(raw, opts), timeoutMs: this.options.commandTimeoutMs });
+    this.controls.on('changed', (state) => {
+      this.projectControlState(state);
+      this.emit('controlChanged', state);
+    });
+    this.controls.on('capabilitiesChanged', (descriptors) => this.emit('controlCapabilitiesChanged', descriptors));
+  }
+
+  /** Current parameter declarations; this method never performs network I/O. */
+  getControlCapabilities(): TciControlDescriptor[] { return this.controls.getCapabilities(); }
+
+  /** Detached cached state for an explicitly addressed or configured parameter. */
+  getControlState<K extends TciControlId>(id: K, target?: TciControlTarget): TciControlState<K> | undefined {
+    return this.controls.getState(id, target);
+  }
+
+  readControl<K extends TciControlId>(id: K, target?: TciControlTarget, options?: TciControlRequestOptions): Promise<TciControlState<K>> {
+    return this.controls.read(id, target, options);
+  }
+
+  writeControl<K extends TciControlId>(id: K, value: TciControlValueMap[K], target?: TciControlTarget,
+    options?: TciControlRequestOptions): Promise<TciControlWriteResult<K>> {
+    return this.controls.write(id, value, target, options);
   }
 
   async connect(): Promise<TciHandshakeResult> {
@@ -723,6 +751,11 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       throw new TciError('protocol-error', `Invalid RX filter band: ${lowerHz},${upperHz}`);
     }
     const key = String(receiver);
+    if (this.controls.supports('rx_filter_band') && (!options.ackMode || options.ackMode === 'state')) {
+      const result = await this.writeControl('rx_filter_band', { lowHz: lower, highHz: upper }, { scope: 'receiver', receiver }, options);
+      if (result.outcome === 'clamped') throw new TciError('control-rejected', 'RX filter band did not match the requested bounds', result);
+      return;
+    }
     await this.sendStateWrite(
       'RX_FILTER_BAND',
       [receiver, lower, upper],
@@ -736,6 +769,10 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   async getRxFilterBand(receiver = this.options.receiver): Promise<[number, number] | undefined> {
+    if (this.controls.supports('rx_filter_band')) {
+      const band = (await this.readControl('rx_filter_band', { scope: 'receiver', receiver })).value;
+      return band ? [band.lowHz, band.highHz] : undefined;
+    }
     const reply = await this.request('RX_FILTER_BAND', [receiver]);
     const values = parseNumberPair(reply.args.slice(1, 3));
     if (values) return values;
@@ -784,6 +821,10 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
   async setDriveWithResult(value: number, trx = this.options.trx, options: TciWriteOptions = {}): Promise<TciWriteResult<number>> {
     const requested = normalizePercent(value);
+    if (this.controls.supports('drive')) {
+      const result = await this.writeControl('drive', requested, { scope: 'trx', trx }, options);
+      return writeResult(requested, result.applied!, result.acknowledgement === 'readback' ? 'readback' : 'state');
+    }
     const dialect = this.requireDialect();
     if (this.state.drive[String(trx)] === requested) {
       return writeResult(requested, requested, 'state');
@@ -815,6 +856,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   async getDrive(trx = this.options.trx): Promise<number | undefined> {
+    if (this.controls.supports('drive')) return (await this.readControl('drive', { scope: 'trx', trx })).value ?? undefined;
     const dialect = this.requireDialect();
     const reply = await this.request('DRIVE', dialect.buildDriveReadArgs(trx));
     return dialect.parseDrive(reply.args, trx)?.value ?? this.state.drive[String(trx)];
@@ -822,6 +864,10 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
   async setTuneDrive(value: number, trx = this.options.trx, options: TciWriteOptions = {}): Promise<TciWriteResult<number>> {
     const requested = normalizePercent(value);
+    if (this.controls.supports('tune_drive')) {
+      const result = await this.writeControl('tune_drive', requested, { scope: 'trx', trx }, options);
+      return writeResult(requested, result.applied!, result.acknowledgement === 'readback' ? 'readback' : 'state');
+    }
     const dialect = this.requireDialect();
     if (this.state.tuneDrive[String(trx)] === requested) return writeResult(requested, requested, 'state');
     const timeoutMs = options.timeoutMs ?? this.options.writeTimeoutMs;
@@ -849,12 +895,17 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   async getTuneDrive(trx = this.options.trx): Promise<number | undefined> {
+    if (this.controls.supports('tune_drive')) return (await this.readControl('tune_drive', { scope: 'trx', trx })).value ?? undefined;
     const dialect = this.requireDialect();
     const reply = await this.request('TUNE_DRIVE', dialect.buildTuneDriveReadArgs(trx));
     return dialect.parseTuneDrive(reply.args, trx)?.value ?? this.state.tuneDrive[String(trx)];
   }
 
   async setSplit(enabled: boolean, trx = this.options.trx, options: TciWriteOptions = {}): Promise<void> {
+    if (this.controls.supports('split_enable') && (!options.ackMode || options.ackMode === 'state')) {
+      await this.writeControl('split_enable', enabled, { scope: 'trx', trx }, options);
+      return;
+    }
     try {
       await this.sendStateWrite(
         'SPLIT_ENABLE',
@@ -922,12 +973,19 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
   /** Enable or disable the radio's hardware TX monitor. */
   async setMonitorEnabled(enabled: boolean): Promise<void> {
+    if (this.controls.supports('mon_enable')) { await this.writeControl('mon_enable', enabled); return; }
     await this.sendCommand('MON_ENABLE', [enabled], { waitForReply: false });
   }
 
   async setMonitorVolumeDb(volumeDb: number): Promise<void> {
     if (!Number.isFinite(volumeDb) || volumeDb < -60 || volumeDb > 0) {
       throw new TciError('protocol-error', `Invalid TCI monitor volume: ${volumeDb}`);
+    }
+    const descriptor = this.getControlCapabilities().find((d) => d.id === 'mon_volume');
+    if (descriptor?.support === 'implemented') {
+      if (descriptor.unit !== 'dB') throw new TciError('unsupported-control', 'This dialect does not use monitor dB; use writeControl with its declared native unit');
+      await this.writeControl('mon_volume', volumeDb);
+      return;
     }
     await this.sendCommand('MON_VOLUME', [volumeDb], { waitForReply: false });
   }
@@ -1099,6 +1157,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   private resetHandshake(): void {
+    this.controls.reset();
     this.rejectHandshake(new TciError('cancelled', 'TCI handshake replaced by a new connection'));
     this.handshakeResult = undefined;
     this.handshakeError = undefined;
@@ -1148,6 +1207,13 @@ export class TciClient extends EventEmitter<TciClientEvents> {
     this.state.dialectId = dialect.dialect.id;
     this.state.dialectConfidence = dialect.confidence;
     this.state.dialectWarnings = [...dialect.warnings];
+    this.controls.configure(dialect.dialect.controlAdapter, {
+      identity, manual: this.options.dialect !== 'auto', receiver: this.options.receiver,
+      trx: this.options.trx, channel: this.options.vfo,
+      receiverCount: this.state.trxCount, channelCount: this.state.channelCount,
+      commandNames,
+      receiveOnly: this.state.receiveOnly,
+    }, this.initializationCommands);
     const waiter = this.handshakeWaiter;
     this.handshakeWaiter = undefined;
     if (waiter) {
@@ -1202,8 +1268,8 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       this.emit('tci:rx', raw, commands);
       for (const command of commands) {
         if (!this.handshakeResult) this.initializationCommands.push(command);
-        this.queue.handleCommand(command);
         this.applyCommand(command);
+        this.queue.handleCommand(command);
         this.activeMeterSession?._acceptCommand(command, receivedAtMs);
         this.emit('command', command);
       }
@@ -1260,7 +1326,10 @@ export class TciClient extends EventEmitter<TciClientEvents> {
 
   private applyCommand(command: TciCommand): void {
     const readyBefore = this.state.ready;
-    this.stateReducers.get(command.name)?.(command.args);
+    this.controls.accept(command);
+    const canonical = ['drive', 'tune_drive', 'split_enable', 'rx_filter_band'].includes(command.name)
+      && this.controls.supports(command.name as TciControlId);
+    if (!canonical) this.stateReducers.get(command.name)?.(command.args);
 
     if (!readyBefore && this.state.ready) {
       try {
@@ -1275,6 +1344,20 @@ export class TciClient extends EventEmitter<TciClientEvents> {
       }
     }
     this.emitState();
+  }
+
+  private projectControlState(state: TciControlState): void {
+    if (state.availability !== 'available') return;
+    const target = state.target;
+    if (target.scope === 'trx') {
+      if (state.id === 'drive') this.state.drive[String(target.trx)] = state.value as number;
+      if (state.id === 'tune_drive') this.state.tuneDrive[String(target.trx)] = state.value as number;
+      if (state.id === 'split_enable') this.state.split[String(target.trx)] = state.value as boolean;
+    }
+    if (state.id === 'rx_filter_band' && target.scope === 'receiver' && state.value) {
+      const band = state.value as { lowHz: number; highHz: number };
+      this.state.rxFilterBands[String(target.receiver)] = [band.lowHz, band.highHz];
+    }
   }
 
   private createStateReducers(): Map<string, (args: string[]) => void> {
@@ -1449,6 +1532,7 @@ export class TciClient extends EventEmitter<TciClientEvents> {
   }
 
   private handleClose(reason?: unknown): void {
+    this.controls.reset();
     const transport = this.transport;
     this.transport = undefined;
     transport?.removeAllListeners();

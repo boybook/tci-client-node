@@ -31,7 +31,8 @@
     "dist",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "docs"
   ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -52,6 +53,9 @@
       ],
       "*": [
         "./dist/index.d.ts"
+      ],
+      "controls": [
+        "./dist/controls/index.d.ts"
       ]
     }
   },
@@ -90,6 +94,11 @@
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js",
       "require": "./dist/testing/index.cjs"
+    },
+    "./controls": {
+      "types": "./dist/controls/index.d.ts",
+      "import": "./dist/controls/index.js",
+      "require": "./dist/controls/index.cjs"
     }
   },
   "scripts": {

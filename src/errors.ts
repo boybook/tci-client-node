@@ -8,7 +8,10 @@ export type TciErrorCode =
   | 'disconnected'
   | 'protocol-error'
   | 'invalid-frame'
-  | 'cancelled';
+  | 'cancelled'
+  | 'unsupported-control'
+  | 'invalid-control-value'
+  | 'control-rejected';
 
 export class TciError extends Error {
   readonly code: TciErrorCode;

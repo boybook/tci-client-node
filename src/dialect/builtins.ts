@@ -7,6 +7,7 @@ import type {
   TciStreamLengthSemantics,
 } from './types.js';
 import { StandardTciMeterAdapter, createUnknownTciMeterAdapter } from '../meter/index.js';
+import { createTciControlAdapter } from '../controls/adapters.js';
 
 type VersionTuple = readonly number[];
 
@@ -23,6 +24,7 @@ interface StandardDialectOptions {
   ddsWriteAcknowledgement?: TciDialect['ddsWriteAcknowledgement'];
   driveHasTrx: boolean;
   meterAdapter?: TciDialect['meterAdapter'];
+  controlAdapter?: TciDialect['controlAdapter'];
   detect: (context: TciDialectDetectionContext) => TciDialectScore;
   resolve?: (context: TciDialectDetectionContext) => TciDialect;
 }
@@ -39,6 +41,7 @@ class StandardTciDialect implements TciDialect {
   readonly frequencyWriteAcknowledgement: TciDialect['frequencyWriteAcknowledgement'];
   readonly ddsWriteAcknowledgement: TciDialect['ddsWriteAcknowledgement'];
   readonly meterAdapter?: TciDialect['meterAdapter'];
+  readonly controlAdapter?: TciDialect['controlAdapter'];
   private readonly driveHasTrx: boolean;
   private readonly detector: StandardDialectOptions['detect'];
   private readonly resolver?: StandardDialectOptions['resolve'];
@@ -55,6 +58,7 @@ class StandardTciDialect implements TciDialect {
     this.frequencyWriteAcknowledgement = options.frequencyWriteAcknowledgement ?? 'state';
     this.ddsWriteAcknowledgement = options.ddsWriteAcknowledgement ?? 'state';
     this.meterAdapter = options.meterAdapter;
+    this.controlAdapter = options.controlAdapter;
     this.driveHasTrx = options.driveHasTrx;
     this.detector = options.detect;
     this.resolver = options.resolve;
@@ -109,6 +113,7 @@ function programIncludes(context: TciDialectDetectionContext, value: string): bo
 }
 
 export const expertSdr14Dialect: TciDialect = new StandardTciDialect({
+  controlAdapter: createTciControlAdapter('expert', true),
   id: 'expertsdr-1.4', label: 'ExpertSDR / TCI 1.4', streamLengthSemantics: 'per-channel',
   supportsStreamChannels: false, supportsTxAudioSource: false, supportsIqStream: true,
   lineOutStreamMode: 'native-stream',
@@ -122,6 +127,7 @@ export const expertSdr14Dialect: TciDialect = new StandardTciDialect({
 });
 
 export const expertSdrLegacyDialect: TciDialect = new StandardTciDialect({
+  controlAdapter: createTciControlAdapter('expert'),
   id: 'expertsdr-1.5-1.8', label: 'ExpertSDR / TCI 1.5-1.8', streamLengthSemantics: 'per-channel',
   supportsStreamChannels: false, supportsTxAudioSource: false, supportsIqStream: true,
   lineOutStreamMode: 'native-stream',
@@ -135,6 +141,7 @@ export const expertSdrLegacyDialect: TciDialect = new StandardTciDialect({
 });
 
 export const expertSdrModernDialect: TciDialect = new StandardTciDialect({
+  controlAdapter: createTciControlAdapter('expert'),
   id: 'expertsdr3-1.9-2.0', label: 'ExpertSDR3 / TCI 1.9-2.0', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
   lineOutStreamMode: 'native-stream',
@@ -153,6 +160,7 @@ export const expertSdrModernDialect: TciDialect = new StandardTciDialect({
 });
 
 export const thetisDialect: TciDialect = new StandardTciDialect({
+  controlAdapter: createTciControlAdapter('thetis'),
   id: 'thetis-2.0', label: 'Thetis / TCI 2.0', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
   lineOutStreamMode: 'vac-control',
@@ -184,6 +192,7 @@ export const thetisDialect: TciDialect = new StandardTciDialect({
 });
 
 export const aetherSdrDialect: TciDialect = new StandardTciDialect({
+  controlAdapter: createTciControlAdapter('aether'),
   id: 'aethersdr-1.5', label: 'AetherSDR / TCI 1.5 hybrid', streamLengthSemantics: 'scalar',
   supportsStreamChannels: true, supportsTxAudioSource: true, supportsIqStream: true,
   lineOutStreamMode: 'unknown',

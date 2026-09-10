@@ -162,7 +162,33 @@ fields `frequencyWriteAcknowledgement` and `ddsWriteAcknowledgement` default to
 `state`. Per-call acknowledgement options override the client default; PTT is
 independent of frequency policies and remains state-confirmed by default.
 
-## Power Writes
+## Parameter Controls
+
+Parameter control is declared per dialect, including its exact query shape,
+native unit, target scope and confirmation policy. Compatible protocol names
+alone do not establish control support. See [control evidence and semantics](docs/controls.md).
+
+```ts
+const controls = client.getControlCapabilities(); // no network I/O
+client.on('controlChanged', (state) => { /* apply only this parameter delta */ });
+const volume = await client.readControl('rx_volume');
+await client.writeControl('rx_filter_band', { lowHz: 30, highHz: 2700 });
+```
+
+Targets default to the client's configured receiver/TRX/VFO and the dialect's
+scope. Callers must use the descriptor: AetherSDR queries RX volume with one
+receiver index, whereas ExpertSDR queries with receiver and channel. State and
+descriptors are detached snapshots. `controlCapabilitiesChanged` reports dynamic
+option changes (for example Thetis TX profiles).
+
+`writeControl` returns the requested and applied values, with `applied` or
+`clamped` outcome. A write-only command returns `sent` and a null applied value;
+it never fabricates a state confirmation. Applications enforce `requiresIdle`
+through their radio coordinator. The controls module never starts streams,
+keys PTT, enables a radio, or polls on its own. Source units remain native;
+host applications own normalization and presentation.
+
+## Power Write Results
 
 Servers may apply a local band or PA safety limit and broadcast a different drive value. Use the detailed result when the difference matters:
 

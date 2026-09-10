@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add typed parameter controls, explicit vendor command tables, atomic SET/readback transactions, and control state deltas.
+- Preserve legacy public control methods and exclude unsupported or placeholder vendor controls.
+
 ## 0.5.4
 
 - Replace Thetis's default optimistic VFO completion with target-matched asynchronous
