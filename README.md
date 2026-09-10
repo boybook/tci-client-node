@@ -245,6 +245,8 @@ npm run build
 ```
 
 The package is built with `tsup` and publishes ESM, CommonJS, and declaration files.
+The `prepack` hook builds these entries for both registry packages and dependencies
+pinned to a Git commit, so consumers do not need a pre-existing local `dist` directory.
 
 ## Releases
 

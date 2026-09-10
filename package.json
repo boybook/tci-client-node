@@ -103,6 +103,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "prepack": "npm run build",
     "clean": "rimraf dist coverage",
     "test": "vitest run",
     "test:watch": "vitest",
